@@ -266,6 +266,7 @@ class CoLwithBert(BertForMaskedLM):
         voken_regression_loss = torch.tensor(0.0).to(sequence_output)
 
         if self.voken_hinge_loss:
+            #Check: why the output of sequence_output.norm(2, dim=-1, keepdim=True) is a constant number
             voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
             voken_prediction *= attention_mask.unsqueeze(-1)
             voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, 1.0) * 1.0                        

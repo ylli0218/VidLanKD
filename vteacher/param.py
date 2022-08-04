@@ -54,6 +54,8 @@ def process_args():
     parser.add_argument(
         "--overwrite_cache", action="store_true",
         help="Overwrite the cached training and evaluation sets")
+    parser.add_argument(
+        "--secLang_type", default=None, type=str, help="model of seconde language, assuming can be loaded from huggingface",)
 
     # MLM tasks
     parser.add_argument(

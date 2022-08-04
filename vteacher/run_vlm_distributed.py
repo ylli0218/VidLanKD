@@ -46,6 +46,7 @@ from transformers import (
     BertConfig,
     BertForMaskedLM,
     BertTokenizer,
+    BertModel,
     CamembertConfig,
     CamembertForMaskedLM,
     CamembertTokenizer,
@@ -67,7 +68,7 @@ from transformers import (
 )
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from vteacher.data import CoLDataset, get_voken_feats
+from vteacher.data import CoLDatasetPd, get_voken_feats
 from vteacher.param import process_args
 from vteacher.model import CoLBertConfig, CoLwithBert, VisnModel
 
@@ -90,9 +91,9 @@ MODEL_CLASSES = {
 }
 
 
-def load_and_cache_examples(args, mode, tokenizer, evaluate=False):
+def load_and_cache_examples(args, mode, tokenizer, secLang_tokenizer, evaluate=False):
 #     file_path = args.eval_data_file if evaluate else args.train_data_file
-    return CoLDataset(mode, tokenizer, args.block_size,
+    return CoLDatasetPd(mode, tokenizer, secLang_tokenizer, args.block_size,
                       split_sent=args.split_sent, voken_dir=args.voken_dir,
                       suffix=args.voken_suffix,
                       verbose=(args.gpu == 0),
@@ -151,7 +152,7 @@ def mask_tokens(tokens: torch.Tensor, vokens: torch.Tensor, tokenizer: PreTraine
 
 
 def train(args, train_dataset, valid_dataset,
-          model, tokenizer, visn_model=None) -> Tuple[int, float]:
+          model, tokenizer, secLang_model=None) -> Tuple[int, float]:
     set_seed(args)  # Added here for reproducibility
 
     """ Train the model """
@@ -247,25 +248,25 @@ def train(args, train_dataset, valid_dataset,
             from apex import amp
         except ImportError:
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
-        if visn_model is not None:
-            [model, visn_model], optimizer = amp.initialize([model, visn_model], optimizer, opt_level=args.fp16_opt_level)
+        if secLang_model is not None:
+            [model, secLang_model], optimizer = amp.initialize([model, secLang_model], optimizer, opt_level=args.fp16_opt_level)
         else:
             model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
         from apex.parallel import DistributedDataParallel as DDP
         model = DDP(model)
-        if visn_model is not None:
-            visn_model = DDP(visn_model)
+        if secLang_model is not None:
+            secLang_model = DDP(secLang_model)
     else:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu], find_unused_parameters=True
+            model, device_ids=[args.gpu], find_unused_parameters=False
         )
-        if visn_model is not None:
-            visn_model = torch.nn.parallel.DistributedDataParallel(
-                visn_model, device_ids=[args.gpu], find_unused_parameters=True
+        if secLang_model is not None:
+            secLang_model = torch.nn.parallel.DistributedDataParallel(
+                secLang_model, device_ids=[args.gpu], find_unused_parameters=False
             )
         
 #     model.module.load_state_dict(torch.load('snap/vlm/howto100m_bert_base_vokenhinge_v1/checkpoint-epoch0012/pytorch_model.bin'), strict=False)
-#     visn_model.load_state_dict(torch.load('snap/vlm/howto100m_bert_base_vokenhinge_v1/checkpoint-epoch0012/visn_model.chkpt'), strict=False)
+#     secLang_model.load_state_dict(torch.load('snap/vlm/howto100m_bert_base_vokenhinge_v1/checkpoint-epoch0012/secLang_model.chkpt'), strict=False)
     # Allow not calclating the lm heads.
 
 
@@ -302,8 +303,8 @@ def train(args, train_dataset, valid_dataset,
     # model_to_resize.resize_token_embeddings(len(tokenizer))
 
     model.zero_grad()
-    if visn_model is not None:
-        visn_model.zero_grad()
+    if secLang_model is not None:
+        secLang_model.zero_grad()
     train_iterator = trange(
         epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.gpu != 0
     )
@@ -313,19 +314,20 @@ def train(args, train_dataset, valid_dataset,
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.gpu != 0)
         tr_loss, logging_loss = np.zeros(len(LOSS_NAMES)), 0.0
         model.zero_grad()
-        if visn_model is not None:
-            visn_model.zero_grad()
+        if secLang_model is not None:
+            secLang_model.zero_grad()
         for step, (tokens, vokens) in enumerate(epoch_iterator):
             token_inputs, token_labels, voken_labels = mask_tokens(tokens, vokens, tokenizer, args)
             token_inputs = token_inputs.to(args.device)
             token_labels = token_labels.to(args.device) if args.mlm_ratio != 0. else None
             voken_labels = voken_labels.to(args.device)
-            voken_masks = torch.ones_like(voken_labels)[:,:,-1].to(args.device)
-            token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-            position_ids = []
-            for i in range(voken_masks.size(1)):
-                position_ids.append(i)
-            position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
+            # Using default position id for language models
+            # voken_masks = torch.ones_like(voken_labels)[:,:,-1].to(args.device)
+            # token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+            # position_ids = []
+            # for i in range(voken_masks.size(1)):
+            #     position_ids.append(i)
+            # position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
             # If some of the input is padded, then the attention mask is needed
             attention_mask = (token_inputs != tokenizer.pad_token_id)         # word_tokens --> 1, pad_token --> 0
 
@@ -340,12 +342,25 @@ def train(args, train_dataset, valid_dataset,
                 print()
             
             model.train()
-            if visn_model is not None:
-                visn_model.train()
+            if secLang_model is not None:
+                secLang_model.eval()
             
             if args.voken_hinge_loss:
-                voken_masks = (voken_labels!=0.0)[:,:,-1]
-                visn_output = visn_model(voken_labels, voken_masks, token_type_ids, position_ids)
+                with torch.no_grad(): # Do not update secLang model
+                    # Not sure why using [:,:,-1] for voken_masks
+                    # voken_masks = (voken_labels!=0.0)[:,:,-1]
+                    voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
+                    token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+                    visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[1] # Use pooler output for now, revisit later
+                    # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[0]
+                    # Everage the output tensor for all unpadded tokens
+                    # Could also try other method such as the one used in Colbert
+                    # num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
+                    # visn_output = visn_output * voken_masks.unsqueeze(-1)
+                    # visn_output = visn_output.sum(1, keepdim=True)
+                    # visn_output = visn_output/num_of_ummask_token
+
+                    visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
             else:
                 visn_output = None
                 
@@ -391,15 +406,15 @@ def train(args, train_dataset, valid_dataset,
                         total_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
                     else:
                         total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                        total_norm = torch.nn.utils.clip_grad_norm_(visn_model.parameters(), args.max_grad_norm)
+                        total_norm = torch.nn.utils.clip_grad_norm_(secLang_model.parameters(), args.max_grad_norm)
                 elif args.max_grad_norm <= 0. and step <= args.gradient_accumulation_steps:
                     logger.warning("Have not clipped the gradient because "
                                    "the max_grad_norm is set to %0.2f" % args.max_grad_norm)
                 optimizer.step()
                 scheduler.step()  # Update learning rate schedule
                 model.zero_grad()
-                if visn_model is not None:
-                    visn_model.zero_grad()
+                if secLang_model is not None:
+                    secLang_model.zero_grad()
                 global_step += 1
 
                 if args.gpu == 0 and args.logging_steps > 0 and (step + 1) % args.logging_steps == 0:
@@ -430,7 +445,7 @@ def train(args, train_dataset, valid_dataset,
         if args.gpu == 0:
             # Save checkpoints
             checkpoint_name = "checkpoint-epoch%04d" % epoch
-            save_model(args, checkpoint_name, model, visn_model, tokenizer, optimizer, scheduler)
+            save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
 
             # last_path = os.path.join(args.output_dir, 'checkpoint-last')
             # if os.path.exists(last_path):
@@ -447,7 +462,7 @@ def train(args, train_dataset, valid_dataset,
                 old_eval_batch_size = args.per_gpu_eval_batch_size
                 while args.per_gpu_eval_batch_size > 0:
                     try:
-                        results = evaluate(args, valid_dataset, model, tokenizer, visn_model=visn_model)
+                        results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
                         break
                     except RuntimeError as e:
                         args.per_gpu_eval_batch_size = int(args.per_gpu_eval_batch_size / 2)
@@ -480,7 +495,7 @@ def train(args, train_dataset, valid_dataset,
         tb_writer.close()
 
 
-def save_model(args, name, model, visn_model, tokenizer, optimizer, scheduler):
+def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler):
     # Save model checkpoint
     output_dir = os.path.join(args.output_dir, name)
     os.makedirs(output_dir, exist_ok=True)
@@ -488,15 +503,15 @@ def save_model(args, name, model, visn_model, tokenizer, optimizer, scheduler):
         model.module if hasattr(model, "module") else model
     )  # Take care of distributed/parallel training
     model_to_save.save_pretrained(output_dir)
-    if visn_model is not None:
-        torch.save(visn_model.state_dict(), output_dir+'/visn_model.chkpt')
+    if secLang_model is not None:
+        torch.save(secLang_model.state_dict(), output_dir+'/secLang_model.chkpt')
     tokenizer.save_pretrained(output_dir)
     
     torch.save(args, os.path.join(output_dir, "training_args.bin"))
     logger.info("Saving model checkpoint to %s", output_dir)
 
 
-def evaluate(args, eval_dataset, model, tokenizer, visn_model=None, prefix="") -> Dict:
+def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix="") -> Dict:
     torch.cuda.empty_cache() 
     # # Loop to handle MNLI double evaluation (matched, mis-matched)
     # eval_dataset = load_and_cache_examples(args, tokenizer, evaluate=True)
@@ -527,27 +542,40 @@ def evaluate(args, eval_dataset, model, tokenizer, visn_model=None, prefix="") -
     total_voken_reg_loss = 0.0
     nb_eval_steps = 0
     model.eval()
-    if visn_model is not None:
-        visn_model.eval()
+    if secLang_model is not None:
+        secLang_model.eval()
 
     for tokens, vokens in tqdm(eval_dataloader, desc="Evaluating"):
         token_inputs, token_labels, voken_labels = mask_tokens(tokens, vokens, tokenizer, args)
         token_inputs = token_inputs.to(args.device)
         token_labels = token_labels.to(args.device) if args.mlm_ratio != 0 else None
         voken_labels = voken_labels.to(args.device)
-        voken_masks = torch.ones_like(voken_labels)[:,:,-1].to(args.device)
-        token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-        position_ids = []
-        for i in range(voken_masks.size(1)):
-            position_ids.append(i)
-        position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
+        # Using default position id for language models
+        # voken_masks = torch.ones_like(voken_labels)[:,:,-1].to(args.device)
+        # token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+        # position_ids = []
+        # for i in range(voken_masks.size(1)):
+        #     position_ids.append(i)
+        # position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
         # If some of the input is padded, then the attention mask is needed
         attention_mask = (token_inputs != tokenizer.pad_token_id)  # word_tokens --> 1, pad_token --> 0
 
         with torch.no_grad():
             if args.voken_hinge_loss:
-                voken_masks = (voken_labels!=0.0)[:,:,-1]
-                visn_output = visn_model(voken_labels, voken_masks, token_type_ids, position_ids)
+                # Not sure why using [:,:,-1] for voken_masks
+                # voken_masks = (voken_labels!=0.0)[:,:,-1]
+                voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
+                token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[1] # Use pooler output for now, revisit later
+                # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[0]
+                # Everage the output tensor for all unpadded tokens
+                # Could also try other method such as the one used in Colbert
+                # num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
+                # visn_output = visn_output * voken_masks.unsqueeze(-1)
+                # visn_output = visn_output.sum(1, keepdim=True)
+                # visn_output = visn_output/num_of_ummask_token
+
+                visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
             else:
                 visn_output = None
         
@@ -663,8 +691,10 @@ def setup(gpu, args):
     # and the others will use the cache
     if gpu != 0:
         torch.distributed.barrier()
-    train_dataset = load_and_cache_examples(args, 'train', tokenizer, evaluate=False)
-    valid_dataset = load_and_cache_examples(args, 'valid', tokenizer, evaluate=True)
+    if args.voken_hinge_loss:
+        secLang_tokenizer = BertTokenizer.from_pretrained(args.secLang_type)
+    train_dataset = load_and_cache_examples(args, 'train', tokenizer, secLang_tokenizer, evaluate=False)
+    valid_dataset = load_and_cache_examples(args, 'valid', tokenizer, secLang_tokenizer, evaluate=True)
     if gpu == 0:
         torch.distributed.barrier()
 
@@ -676,11 +706,9 @@ def setup(gpu, args):
         config = config_class.from_pretrained(
             args.config_name,
             cache_dir=args.cache_dir,
-            voken_size=train_dataset.voken_size,
             do_voken_cls=args.do_voken_cls,
             do_voken_reg=args.do_voken_reg,
             do_voken_ctr=args.do_voken_ctr,
-            use_clip=args.use_clip,
             shared_head=args.shared_head,
             voken_hinge_loss=args.voken_hinge_loss,
             margin=args.margin,
@@ -707,10 +735,10 @@ def setup(gpu, args):
         model = model_class(config=config)
 
     if args.voken_hinge_loss:
-        visn_model = VisnModel(args.use_clip, config)
-        visn_model.to(args.device)
+        secLang_model = BertModel.from_pretrained(args.secLang_type)
+        secLang_model.to(args.device)
     else:
-        visn_model = None
+        secLang_model = None
     model.to(args.device)
 
     # End of barrier to make sure only the first process waiting other processes
@@ -731,11 +759,11 @@ def setup(gpu, args):
 
     # Training
     if args.do_train:
-        train(args, train_dataset, valid_dataset, model, tokenizer, visn_model=visn_model)
+        train(args, train_dataset, valid_dataset, model, tokenizer, secLang_model=secLang_model)
 
     # Evaluation
     if args.do_eval and gpu == 0:
-        results = evaluate(args, valid_dataset, model, tokenizer, visn_model=visn_model)
+        results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
         for key, value in results.items():
             logger.info("\t %s: %0.4f" % (key, value))
 
