@@ -79,6 +79,7 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(20) #INFO level
 
 
 MODEL_CLASSES = {
@@ -374,9 +375,9 @@ def train(args, train_dataset, valid_dataset,
             token_loss = outputs[2]
             
             if args.mlm_ratio == 0.:
-                loss = voken_contra_loss + voken_reg_loss
+                loss = args.contra_ratio * voken_contra_loss + voken_reg_loss
             else:
-                loss = voken_contra_loss + voken_reg_loss + args.mlm_ratio * token_loss
+                loss = args.contra_ratio * voken_contra_loss + voken_reg_loss + args.mlm_ratio * token_loss
 
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
@@ -599,6 +600,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
     perplexity = torch.exp(torch.tensor(total_token_loss)).item()
 
     result = {"perplexity": perplexity,
+              "total_token_loss": total_token_loss,    
               "voken_contra_loss": total_voken_contra_loss / nb_eval_steps,
               "voken_reg_loss": total_voken_reg_loss / nb_eval_steps}
     torch.cuda.empty_cache() 
@@ -650,7 +652,7 @@ def setup(gpu, args):
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         # level=logging.INFO if args.gpu == 0 else logging.WARN,
-        level=logging.INFO,
+        level=logging.DEBUG,
     )
     logger.warning(
         "Process GPU: %s, num_of_total_GPUs: %s, distributed training: True, 16-bits training: %s",

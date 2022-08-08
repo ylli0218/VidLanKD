@@ -84,6 +84,8 @@ def process_args():
     parser.add_argument("--voken_hinge_loss", action='store_true', help='Will do voken contrastive task (not used in this paper)')
     parser.add_argument("--use_clip", action='store_true', help='Will do voken regression task (not used in this paper)')
     parser.add_argument("--margin", default=1.0, type=float, help="Total number of training epochs to perform.")
+    parser.add_argument(
+        "--contra_ratio", type=float, default=1., help="The ratio of contrastive loss in the total loss.")
 
     # Batch Size and Training Steps
     parser.add_argument("--seed", type=int, default=95, help="random seed for initialization")
