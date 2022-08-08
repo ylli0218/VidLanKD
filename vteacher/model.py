@@ -245,9 +245,7 @@ class CoLwithBert(BertForMaskedLM):
             masked_lm_labels=None,
             encoder_hidden_states=None,
             encoder_attention_mask=None,
-            lm_labels=None,
             voken_labels=None,
-            voken_features=None,
     ):
         outputs = self.bert(
             input_ids,

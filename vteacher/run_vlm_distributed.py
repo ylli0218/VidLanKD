@@ -258,7 +258,7 @@ def train(args, train_dataset, valid_dataset,
             secLang_model = DDP(secLang_model)
     else:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu], find_unused_parameters=False
+            model, device_ids=[args.gpu], find_unused_parameters=True
         )
         if secLang_model is not None:
             secLang_model = torch.nn.parallel.DistributedDataParallel(
@@ -368,7 +368,7 @@ def train(args, train_dataset, valid_dataset,
                             attention_mask=attention_mask,
                             masked_lm_labels=token_labels,
                             voken_labels=visn_output,
-                            voken_features=voken_labels)
+                            )
             voken_contra_loss = outputs[0]
             voken_reg_loss = outputs[1]
             token_loss = outputs[2]
@@ -583,7 +583,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
                             attention_mask=attention_mask,
                             masked_lm_labels=token_labels,
                             voken_labels=visn_output,
-                            voken_features=voken_labels)
+                            )
             voken_contra_loss = outputs[0]
             voken_reg_loss = outputs[1]
             token_loss = outputs[2]
@@ -649,7 +649,8 @@ def setup(gpu, args):
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if args.gpu == 0 else logging.WARN,
+        # level=logging.INFO if args.gpu == 0 else logging.WARN,
+        level=logging.INFO,
     )
     logger.warning(
         "Process GPU: %s, num_of_total_GPUs: %s, distributed training: True, 16-bits training: %s",
@@ -748,7 +749,7 @@ def setup(gpu, args):
     if args.model_name_or_path:
         if gpu == 0:
             logger.info("Evaluate the performance of the loaded model.")
-            results = evaluate(args, valid_dataset, model, tokenizer)
+            results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
             for key, value in results.items():
                 logger.info("\t %s: %0.4f" % (key, value))
             torch.distributed.barrier()
