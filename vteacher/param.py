@@ -96,6 +96,8 @@ def process_args():
     parser.add_argument("--num_train_epochs", default=1.0, type=float, help="Total number of training epochs to perform.")
     parser.add_argument("--max_steps", default=-1, type=int,
         help="If > 0: set total number of training steps to perform. Override num_train_epochs.",)
+    parser.add_argument("--save_steps", type=int, default=10000,
+                        help="Save every X steps.")
 
     # Optimizer
     parser.add_argument("--lamb", action="store_true", help='Use the LAMB optimizer in apex')

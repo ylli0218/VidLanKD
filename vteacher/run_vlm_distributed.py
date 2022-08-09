@@ -239,8 +239,8 @@ def train(args, train_dataset, valid_dataset,
         and os.path.isfile(os.path.join(args.model_name_or_path, "scheduler.pt"))
     ):
         # Load in optimizer and scheduler states
-        optimizer.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "optimizer.pt")))
-        scheduler.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "scheduler.pt")))
+        optimizer.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "optimizer.pt"), map_location=args.device))
+        scheduler.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "scheduler.pt"), map_location=args.device))
     if args.mlm_ratio == 0.:
         model.cls = None
         
@@ -287,6 +287,7 @@ def train(args, train_dataset, valid_dataset,
 
     global_step = 0
     epochs_trained = 0
+    steps_trained_in_current_epoch = 0
     # Check if continuing training from a checkpoint
     # if args.model_name_or_path and os.path.exists(args.model_name_or_path):
     #     try:
@@ -299,9 +300,29 @@ def train(args, train_dataset, valid_dataset,
     #     except ValueError:
     #         logger.info("  Do not load model from %s, restart training" % args.model_name_or_path)
 
-    model_to_resize = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
-    assert model_to_resize.config.vocab_size == len(tokenizer)
+    # model_to_resize = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
+    # assert model_to_resize.config.vocab_size == len(tokenizer)
     # model_to_resize.resize_token_embeddings(len(tokenizer))
+
+    # Check if continuing training from a checkpoint
+    if args.model_name_or_path and os.path.exists(args.model_name_or_path):
+        try:
+            # path_to_model_dir/checkpoint-epoch<E>-step<S>/
+            checkpoint_suffixes = os.path.basename(args.model_name_or_path).split("-")
+            if len(checkpoint_suffixes) == 3:
+                epochs_trained = int(checkpoint_suffixes[1].replace("epoch", ""))
+                steps_trained_in_current_epoch = int(checkpoint_suffixes[2].replace("step", ""))
+                global_step = epochs_trained * (len(train_dataloader) // args.gradient_accumulation_steps) # Modified later with steps_trained_in_current_epoch 
+            elif len(checkpoint_suffixes) == 2:
+                epochs_trained = int(checkpoint_suffixes[1].replace("epoch", ""))
+                steps_trained_in_current_epoch = global_step = epochs_trained * (len(train_dataloader) // args.gradient_accumulation_steps)
+            else:
+                raise ValueError
+
+            logger.info("  Continuing training from checkpoint, will skip to saved global_step")
+            logger.info("  Continuing training from epoch %d - step %d", epochs_trained, steps_trained_in_current_epoch)
+        except ValueError:
+            logger.info("  Do not load model from %s, restart training" % args.model_name_or_path)
 
     model.zero_grad()
     if secLang_model is not None:
@@ -318,6 +339,10 @@ def train(args, train_dataset, valid_dataset,
         if secLang_model is not None:
             secLang_model.zero_grad()
         for step, (tokens, vokens) in enumerate(epoch_iterator):
+            if global_step < steps_trained_in_current_epoch:
+                if (step + 1) % args.gradient_accumulation_steps == 0:
+                    global_step += 1
+                continue
             token_inputs, token_labels, voken_labels = mask_tokens(tokens, vokens, tokenizer, args)
             token_inputs = token_inputs.to(args.device)
             token_labels = token_labels.to(args.device) if args.mlm_ratio != 0. else None
@@ -436,16 +461,25 @@ def train(args, train_dataset, valid_dataset,
                         tb_writer.add_scalar(loss_name, interval_loss[loss_idx], global_step)
                     logging_loss = tr_loss.copy()
 
+            if global_step > 0 and args.save_steps > 0 and global_step % args.save_steps == 0:
+                # Save it each epoch
+                if args.gpu == 0:
+                    # Save checkpoints
+                    checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
+                    save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
+
             if args.max_steps > 0 and global_step >= args.max_steps:
                 break
                 
-#             if step == 100:
-#                 break
+            # if step == 100:
+            #     checkpoint_name = "checkpoint-test"
+            #     save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
 
         # Save it each epoch
         if args.gpu == 0:
             # Save checkpoints
             checkpoint_name = "checkpoint-epoch%04d" % epoch
+            checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
             save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
 
             # last_path = os.path.join(args.output_dir, 'checkpoint-last')
@@ -510,6 +544,9 @@ def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler
     
     torch.save(args, os.path.join(output_dir, "training_args.bin"))
     logger.info("Saving model checkpoint to %s", output_dir)
+    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+    logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
 
 def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix="") -> Dict:
@@ -748,15 +785,15 @@ def setup(gpu, args):
     if gpu == 0:
         torch.distributed.barrier()
 
-    if args.model_name_or_path:
-        if gpu == 0:
-            logger.info("Evaluate the performance of the loaded model.")
-            results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
-            for key, value in results.items():
-                logger.info("\t %s: %0.4f" % (key, value))
-            torch.distributed.barrier()
-        else:
-            torch.distributed.barrier()
+    # if args.model_name_or_path:
+    #     if gpu == 0:
+    #         logger.info("Evaluate the performance of the loaded model.")
+    #         results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+    #         for key, value in results.items():
+    #             logger.info("\t %s: %0.4f" % (key, value))
+    #         torch.distributed.barrier()
+    #     else:
+    #         torch.distributed.barrier()
 
     logger.info("Training/evaluation parameters %s", args)
 
