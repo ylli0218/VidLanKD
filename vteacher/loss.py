@@ -134,7 +134,8 @@ def paired_hinge_rank_loss_learning(
 
     return loss
 
-
+# CLIP-based loss, a.k.a. in-batch loss, compose N-1 negative examples for each positive example
+# Based on the implementation by Masayasu
 def batchwise_hinge_rank_loss(
         lang_output: torch.Tensor,
         visn_output: torch.Tensor,
@@ -154,16 +155,27 @@ def batchwise_hinge_rank_loss(
     assert margin > 0.
 
     # Expand the visn_output to match each word
-    visn_output = visn_output.unsqueeze(1)                  # [b, 1, dim]
+    visn_output = visn_output.unsqueeze(1)
+    # [b, 1, dim]
 
-    # The score of positive pairs
-    positive_score = (lang_output * visn_output.unsqueeze(1)).sum(-1)    # [b, max_len]
+    # Scores of vision to language pairs
+    visn_lang_scores = (lang_output * visn_output.unsqueeze(1)).sum(-1)
+    # [b(visn), b(lang), max_len]
+    # (i,j): similarity between i-th image and j-th text
+    # diagonal: scores of positive pairs
 
-    # The score of negative pairs. Note that the diagonal is actually the positive score,
-    # but it would be zero-graded in calculating the loss below.
-    negative_scores = (lang_output.reshape(batch_size, 1, lang_len, dim) *
-                       visn_output.reshape(1, batch_size, 1, dim)).sum(-1)    # [b(lang), b(visn), max_len]
-    # negative_scores = torch.einsum('ikd,jd->ijk', lang_output, visn_output)
+    # Scores of language to vision pairs
+    lang_visn_scores = (
+        lang_output.reshape(batch_size, 1, lang_len, dim) *
+        visn_output.reshape(1, batch_size, 1, dim)
+    ).sum(-1)
+    # [b(lang), b(visn), max_len]
+    # (i,j): similarity between i-th text and j-th image
+    # diagonal: scores of positive pairs
+
+    positive_scores = torch.stack([lang_visn_scores[i,i,:] for i in range(batch_size)])
+    # [b, max_len]
+    # similarities of positive pairs (i-th image and i-th text)
 
     # Calculate of the hinge rank loss, let me explain why it works:
     # For the diagonal, the scores are for positive, we thus create a positive_mask to neglect these scores.
@@ -172,11 +184,19 @@ def batchwise_hinge_rank_loss(
     # = 0.      , since we have made sure that margin > 0
     # During backwards, the operator max(0., -margin) would raise a grad of 0 to the operand "-margin",
     #   thus it is just what we want.
-    float_lang_mask = lang_mask.type(lang_output.dtype)       # Either fp16 or fp32
-    positive_mask = torch.eye(batch_size).to(lang_output.device)
-    negative_scores = negative_scores - positive_mask.unsqueeze(-1) * margin * 2
-    lang_loss = hinge(margin - positive_score.unsqueeze(1) + negative_scores) * float_lang_mask.unsqueeze(1)
-    visn_loss = hinge(margin - positive_score.unsqueeze(0) + negative_scores) * float_lang_mask.unsqueeze(1)
+    float_lang_mask = lang_mask.type(lang_output.dtype)  # [b(lang), max_len]
+    positive_mask = torch.eye(batch_size).to(lang_output.device)  # [b, b]
+    # visn_lang_scores -= positive_mask.unsqueeze(-1) * margin * 2
+    # lang_visn_scores -= positive_mask.unsqueeze(-1) * margin * 2
+    visn_lang_scores_upd = visn_lang_scores - positive_mask.unsqueeze(-1) * margin * 2
+    lang_visn_scores_upd = lang_visn_scores - positive_mask.unsqueeze(-1) * margin * 2
+
+    lang_loss = hinge(margin - positive_scores.unsqueeze(0) + lang_visn_scores_upd) * float_lang_mask.unsqueeze(1)
+    # M - v_i*w_i + v_j*w_i
+    # [b(lang), b(visn), max_len]
+    visn_loss = hinge(margin - positive_scores.unsqueeze(0) + visn_lang_scores_upd) * float_lang_mask.unsqueeze(0)
+    # M - v_i*w_i + v_i*w_j
+    # [b(visn), b(lang), max_len]
 
     # Averaging
     # Each sentence is duplicated by batch_size thus the total length is also multiplied by this term.
@@ -185,6 +205,57 @@ def batchwise_hinge_rank_loss(
     visn_loss = visn_loss.sum() / cnt
 
     return lang_loss + visn_loss
+
+# def batchwise_hinge_rank_loss(
+#         lang_output: torch.Tensor,
+#         visn_output: torch.Tensor,
+#         lang_mask: torch.Tensor,
+#         margin: float,
+# ):
+#     """
+#     Consider all un-matched pairs in the batch as negative samples.
+#     :param lang_output: [batch_size, max_len, hid_dim]
+#     :param visn_output: [batch_size, hid_dim]
+#     :param lang_mask: Int Tensor [batch_size, max_len], 1 for tokens, 0 for paddings.
+#     :param margin: margin in the ranking loss
+#     :return: a scalar loss
+#     """
+#     batch_size, lang_len, dim = lang_output.shape
+#     assert batch_size % 2 == 0 and batch_size == visn_output.shape[0]
+#     assert margin > 0.
+
+#     # Expand the visn_output to match each word
+#     visn_output = visn_output.unsqueeze(1)                  # [b, 1, dim]
+
+#     # The score of positive pairs
+#     positive_score = (lang_output * visn_output.unsqueeze(1)).sum(-1)    # [b, max_len]
+
+#     # The score of negative pairs. Note that the diagonal is actually the positive score,
+#     # but it would be zero-graded in calculating the loss below.
+#     negative_scores = (lang_output.reshape(batch_size, 1, lang_len, dim) *
+#                        visn_output.reshape(1, batch_size, 1, dim)).sum(-1)    # [b(lang), b(visn), max_len]
+#     # negative_scores = torch.einsum('ikd,jd->ijk', lang_output, visn_output)
+
+#     # Calculate of the hinge rank loss, let me explain why it works:
+#     # For the diagonal, the scores are for positive, we thus create a positive_mask to neglect these scores.
+#     #   max(0., margin - x^T x + (x^T x - 2 margin) )
+#     # = max(0., -margin)
+#     # = 0.      , since we have made sure that margin > 0
+#     # During backwards, the operator max(0., -margin) would raise a grad of 0 to the operand "-margin",
+#     #   thus it is just what we want.
+#     float_lang_mask = lang_mask.type(lang_output.dtype)       # Either fp16 or fp32
+#     positive_mask = torch.eye(batch_size).to(lang_output.device)
+#     negative_scores = negative_scores - positive_mask.unsqueeze(-1) * margin * 2
+#     lang_loss = hinge(margin - positive_score.unsqueeze(1) + negative_scores) * float_lang_mask.unsqueeze(1)
+#     visn_loss = hinge(margin - positive_score.unsqueeze(0) + negative_scores) * float_lang_mask.unsqueeze(1)
+
+#     # Averaging
+#     # Each sentence is duplicated by batch_size thus the total length is also multiplied by this term.
+#     cnt = max(float_lang_mask.sum() * batch_size, 1.)    # Number of words.
+#     lang_loss = lang_loss.sum() / cnt
+#     visn_loss = visn_loss.sum() / cnt
+
+#     return lang_loss + visn_loss
 
 
 

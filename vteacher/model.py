@@ -229,7 +229,8 @@ class CoLwithBert(BertForMaskedLM):
 
         self.token_cls_loss_fct = CrossEntropyLoss()
         self.visual_hinge_head = BertVLMHingeHead(config)
-        self.contrastive_loss = paired_hinge_rank_loss 
+        # self.contrastive_loss = paired_hinge_rank_loss 
+        self.contrastive_loss = batchwise_hinge_rank_loss
 
     def to(self, *args):
         return super().to(*args)
