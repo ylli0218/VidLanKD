@@ -383,12 +383,15 @@ def train(args, train_dataset, valid_dataset,
                         visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[0]
                         # Everage the output tensor for all unpadded tokens
                         # Could also try other method such as the one used in Colbert
-                        num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
-                        visn_output = visn_output * voken_masks.unsqueeze(-1)
-                        visn_output = visn_output.sum(1, keepdim=True)
-                        visn_output = visn_output/num_of_ummask_token
-                        visn_output = visn_output.squeeze(1) # Keep consistend with the CLS option
+                        # num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
+                        # visn_output = visn_output * voken_masks.unsqueeze(-1)
+                        # visn_output = visn_output.sum(1, keepdim=True)
+                        # visn_output = visn_output/num_of_ummask_token
+                        # visn_output = visn_output.squeeze(1) # Keep consistend with the CLS option
 
+                        # Average cross all tokens including padding tokens
+                        visn_output = visn_output.mean(1, keepdim=True)
+                        visn_output = visn_output.squeeze(1) # Keep consistend with the CLS option
                     visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
             else:
                 visn_output = None
