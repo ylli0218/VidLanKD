@@ -86,6 +86,7 @@ def process_args():
     parser.add_argument("--margin", default=1.0, type=float, help="Total number of training epochs to perform.")
     parser.add_argument(
         "--contra_ratio", type=float, default=1., help="The ratio of contrastive loss in the total loss.")
+    parser.add_argument("--use_CLS_token", action='store_true', help='use the CLS token as the representation of sentence')
 
     # Batch Size and Training Steps
     parser.add_argument("--seed", type=int, default=95, help="random seed for initialization")

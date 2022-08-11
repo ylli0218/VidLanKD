@@ -377,14 +377,17 @@ def train(args, train_dataset, valid_dataset,
                     # voken_masks = (voken_labels!=0.0)[:,:,-1]
                     voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
                     token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-                    visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[1] # Use pooler output for now, revisit later
-                    # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[0]
-                    # Everage the output tensor for all unpadded tokens
-                    # Could also try other method such as the one used in Colbert
-                    # num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
-                    # visn_output = visn_output * voken_masks.unsqueeze(-1)
-                    # visn_output = visn_output.sum(1, keepdim=True)
-                    # visn_output = visn_output/num_of_ummask_token
+                    if args.use_CLS_token:
+                        visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[1] # Use pooler output for now, revisit later
+                    else: # average of unmasked tokens
+                        visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[0]
+                        # Everage the output tensor for all unpadded tokens
+                        # Could also try other method such as the one used in Colbert
+                        num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
+                        visn_output = visn_output * voken_masks.unsqueeze(-1)
+                        visn_output = visn_output.sum(1, keepdim=True)
+                        visn_output = visn_output/num_of_ummask_token
+                        visn_output = visn_output.squeeze(1) # Keep consistend with the CLS option
 
                     visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
             else:
@@ -785,15 +788,15 @@ def setup(gpu, args):
     if gpu == 0:
         torch.distributed.barrier()
 
-    # if args.model_name_or_path:
-    #     if gpu == 0:
-    #         logger.info("Evaluate the performance of the loaded model.")
-    #         results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
-    #         for key, value in results.items():
-    #             logger.info("\t %s: %0.4f" % (key, value))
-    #         torch.distributed.barrier()
-    #     else:
-    #         torch.distributed.barrier()
+    if args.model_name_or_path:
+        if gpu == 0:
+            logger.info("Evaluate the performance of the loaded model.")
+            results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+            for key, value in results.items():
+                logger.info("\t %s: %0.4f" % (key, value))
+            torch.distributed.barrier()
+        else:
+            torch.distributed.barrier()
 
     logger.info("Training/evaluation parameters %s", args)
 
