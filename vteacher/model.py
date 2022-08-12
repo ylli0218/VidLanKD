@@ -406,6 +406,44 @@ class VideoBert(nn.Module):
         
         return sequence_output, pooled_output
     
+class SecLangModel(nn.Module):
+    def __init__(self, model_type, config, arch='BERT', pretrained=True, finetuning=False):
+        """
+        :param dim: dimension of the output
+        :param arch: backbone architecture,
+        :param pretrained: load feature with pre-trained vector
+        :param finetuning: finetune the model
+        """
+        super().__init__()
+        self.finetuning = finetuning
+
+        # Setup Backbone
+        transformer = BertModel.from_pretrained(model_type)
+        self.backbone = transformer
+        # Setup follow-up layers
+        self.mlp_map = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(config.hidden_size, config.hidden_size),
+        )
+
+    def forward(self, video_features, video_mask, token_type_ids=None, position_ids=None):
+        """
+        :param img: a tensor of shape [batch_size, H, W, C]
+        :return: a tensor of [batch_size, d]
+        """
+        if not self.finetuning:
+            with torch.no_grad():
+                _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
+                x = x.detach()
+        else:
+            _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
+            
+        x = self.mlp_map(x)         # [b, dim]
+        x = x / x.norm(2, dim=-1, keepdim=True)
+        return x
+
 class VisnModel(nn.Module):
     def __init__(self, use_clip, config, arch='BERT', pretrained=True, finetuning=False):
         """

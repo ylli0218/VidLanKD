@@ -5,17 +5,17 @@ NAME=$2
 
 
 # Pre-training
-# for conRatio in 0.3 1 3 10
-for conRatio in 1 10
+# for conRatio in 0.1 0.3 1 3 10
+for conRatio in 0.1 0.3 3 10 
 do
-    sleep 5
+    sleep 10
     # Create dirs and make backup
     output=snap/vlm/${NAME}_conRatio${conRatio}
     mkdir -p $output/src
     cp -r vlm $output/src/
     cp scripts/run_glue_at_epoch.bash $output/run_glue_at_epoch.bash 
     cp $0 $output/run.bash
-    CHECKPOINT=$(ls -d ${PWD}/${output}/checkpoint-epoch* | tail -n 1)
+    # CHECKPOINT=$(ls -d ${PWD}/${output}/checkpoint-epoch* | tail -n 1)
     # CHECKPOINT=/dccstor/sentient1/git/VidLanKD/snap/vlm/bz128X2_cls_conRatio0.1/checkpoint-epoch0000-step000005000
     echo "find checkpoint: ${CHECKPOINT}"
     jbsub -q x86_24h -cores 1+1 -mem 100g -require a100 -proj parallel_data -name train_pc \
@@ -33,7 +33,7 @@ do
         --num_train_epochs=20 \
         --learning_rate=5e-5 \
         --weight_decay=0.01 \
-        --warmup_steps=0 \
+        --warmup_steps=500 \
         --mlm_probability 0.15 \
         --mlm_ratio 1.0 \
         --contra_ratio ${conRatio} \
@@ -46,7 +46,7 @@ do
         --dim 64 \
         --voken_hinge_loss \
         --secLang_type='hfl/chinese-macbert-base' \
-        --save_steps=5000 \
+        --save_steps=20000 \
         --use_CLS_token \
         --model_name_or_path=${CHECKPOINT} \
         --mlm ${@:3} > $output/log.log 2>&1 "

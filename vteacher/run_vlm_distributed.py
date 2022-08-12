@@ -70,7 +70,7 @@ from transformers import (
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vteacher.data import CoLDatasetPd, get_voken_feats
 from vteacher.param import process_args
-from vteacher.model import CoLBertConfig, CoLwithBert, VisnModel
+from vteacher.model import CoLBertConfig, CoLwithBert, VisnModel, SecLangModel
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -209,6 +209,14 @@ def train(args, train_dataset, valid_dataset,
             "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
         },
+        {
+            "params": [p for n, p in secLang_model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "weight_decay": args.weight_decay,
+        },
+        {
+            "params": [p for n, p in secLang_model.named_parameters() if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0,
+        },
     ]
     if args.lamb:
         logger.info(f"Using LAMB Optimizer with max grad norm {args.max_grad_norm}")
@@ -263,7 +271,7 @@ def train(args, train_dataset, valid_dataset,
         )
         if secLang_model is not None:
             secLang_model = torch.nn.parallel.DistributedDataParallel(
-                secLang_model, device_ids=[args.gpu], find_unused_parameters=False
+                secLang_model, device_ids=[args.gpu], find_unused_parameters=True
             )
         
 #     model.module.load_state_dict(torch.load('snap/vlm/howto100m_bert_base_vokenhinge_v1/checkpoint-epoch0012/pytorch_model.bin'), strict=False)
@@ -369,30 +377,15 @@ def train(args, train_dataset, valid_dataset,
             
             model.train()
             if secLang_model is not None:
-                secLang_model.eval()
+                secLang_model.train()
             
             if args.voken_hinge_loss:
-                with torch.no_grad(): # Do not update secLang model
-                    # Not sure why using [:,:,-1] for voken_masks
-                    # voken_masks = (voken_labels!=0.0)[:,:,-1]
-                    voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
-                    token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-                    if args.use_CLS_token:
-                        visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[1] # Use pooler output for now, revisit later
-                    else: # average of unmasked tokens
-                        visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[0]
-                        # Everage the output tensor for all unpadded tokens
-                        # Could also try other method such as the one used in Colbert
-                        # num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
-                        # visn_output = visn_output * voken_masks.unsqueeze(-1)
-                        # visn_output = visn_output.sum(1, keepdim=True)
-                        # visn_output = visn_output/num_of_ummask_token
-                        # visn_output = visn_output.squeeze(1) # Keep consistend with the CLS option
-
-                        # Average cross all tokens including padding tokens
-                        visn_output = visn_output.mean(1, keepdim=True)
-                        visn_output = visn_output.squeeze(1) # Keep consistend with the CLS option
-                    visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
+                # Not sure why using [:,:,-1] for voken_masks
+                # voken_masks = (voken_labels!=0.0)[:,:,-1]
+                voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
+                token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
+                # visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
             else:
                 visn_output = None
                 
@@ -544,8 +537,12 @@ def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler
         model.module if hasattr(model, "module") else model
     )  # Take care of distributed/parallel training
     model_to_save.save_pretrained(output_dir)
+
+    secLang_model_to_save = (
+        secLang_model.module if hasattr(secLang_model, "module") else secLang_model
+    )  # Take care of distributed/parallel training
     if secLang_model is not None:
-        torch.save(secLang_model.state_dict(), output_dir+'/secLang_model.chkpt')
+        torch.save(secLang_model_to_save.state_dict(), output_dir+'/secLang_model.chkpt')
     tokenizer.save_pretrained(output_dir)
     
     torch.save(args, os.path.join(output_dir, "training_args.bin"))
@@ -610,16 +607,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
                 # voken_masks = (voken_labels!=0.0)[:,:,-1]
                 voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
                 token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[1] # Use pooler output for now, revisit later
-                # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)[0]
-                # Everage the output tensor for all unpadded tokens
-                # Could also try other method such as the one used in Colbert
-                # num_of_ummask_token = voken_masks.sum(-1).view(visn_output.shape[0], 1, 1) # batch_size , 1 ,1
-                # visn_output = visn_output * voken_masks.unsqueeze(-1)
-                # visn_output = visn_output.sum(1, keepdim=True)
-                # visn_output = visn_output/num_of_ummask_token
-
-                visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
+                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
             else:
                 visn_output = None
         
@@ -781,7 +769,10 @@ def setup(gpu, args):
         model = model_class(config=config)
 
     if args.voken_hinge_loss:
-        secLang_model = BertModel.from_pretrained(args.secLang_type)
+        # secLang_model = BertModel.from_pretrained(args.secLang_type)
+        secLang_model = SecLangModel(args.secLang_type, config)
+        if args.model_name_or_path:
+            secLang_model.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "secLang_model.chkpt"), map_location=args.device))
         secLang_model.to(args.device)
     else:
         secLang_model = None
@@ -791,15 +782,15 @@ def setup(gpu, args):
     if gpu == 0:
         torch.distributed.barrier()
 
-    if args.model_name_or_path:
-        if gpu == 0:
-            logger.info("Evaluate the performance of the loaded model.")
-            results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
-            for key, value in results.items():
-                logger.info("\t %s: %0.4f" % (key, value))
-            torch.distributed.barrier()
-        else:
-            torch.distributed.barrier()
+    # if args.model_name_or_path:
+    #     if gpu == 0:
+    #         logger.info("Evaluate the performance of the loaded model.")
+    #         results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+    #         for key, value in results.items():
+    #             logger.info("\t %s: %0.4f" % (key, value))
+    #         torch.distributed.barrier()
+    #     else:
+    #         torch.distributed.barrier()
 
     logger.info("Training/evaluation parameters %s", args)
 
