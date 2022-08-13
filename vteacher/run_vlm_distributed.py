@@ -293,9 +293,10 @@ def train(args, train_dataset, valid_dataset,
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
 
-    global_step = 0
+    global_step = 0 # global update step
     epochs_trained = 0
-    steps_trained_in_current_epoch = 0
+    update_step_current_epoch = 0
+    update_step_per_epoch = len(train_dataloader) // args.gradient_accumulation_steps
     # Check if continuing training from a checkpoint
     # if args.model_name_or_path and os.path.exists(args.model_name_or_path):
     #     try:
@@ -319,16 +320,16 @@ def train(args, train_dataset, valid_dataset,
             checkpoint_suffixes = os.path.basename(args.model_name_or_path).split("-")
             if len(checkpoint_suffixes) == 3:
                 epochs_trained = int(checkpoint_suffixes[1].replace("epoch", ""))
-                steps_trained_in_current_epoch = int(checkpoint_suffixes[2].replace("step", ""))
-                global_step = epochs_trained * (len(train_dataloader) // args.gradient_accumulation_steps) # Modified later with steps_trained_in_current_epoch 
-            elif len(checkpoint_suffixes) == 2:
-                epochs_trained = int(checkpoint_suffixes[1].replace("epoch", ""))
-                steps_trained_in_current_epoch = global_step = epochs_trained * (len(train_dataloader) // args.gradient_accumulation_steps)
+                global_step = int(checkpoint_suffixes[2].replace("step", ""))
+                update_step_current_epoch = global_step - epochs_trained * update_step_per_epoch # Modified later with steps_trained_in_current_epoch 
+            # elif len(checkpoint_suffixes) == 2:
+            #     epochs_trained = int(checkpoint_suffixes[1].replace("epoch", ""))
+            #     steps_trained_in_current_epoch = global_step = epochs_trained * (len(train_dataloader) // args.gradient_accumulation_steps)
             else:
                 raise ValueError
 
             logger.info("  Continuing training from checkpoint, will skip to saved global_step")
-            logger.info("  Continuing training from epoch %d - step %d", epochs_trained, steps_trained_in_current_epoch)
+            logger.info("  Continuing training from epoch %d - step %d", epochs_trained, update_step_current_epoch)
         except ValueError:
             logger.info("  Do not load model from %s, restart training" % args.model_name_or_path)
 
@@ -347,10 +348,9 @@ def train(args, train_dataset, valid_dataset,
         if secLang_model is not None:
             secLang_model.zero_grad()
         for step, (tokens, vokens) in enumerate(epoch_iterator):
-            if global_step < steps_trained_in_current_epoch:
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    global_step += 1
-                continue
+            if update_step_current_epoch < update_step_per_epoch:
+                if step < update_step_current_epoch * args.gradient_accumulation_steps:
+                    continue
             token_inputs, token_labels, voken_labels = mask_tokens(tokens, vokens, tokenizer, args)
             token_inputs = token_inputs.to(args.device)
             token_labels = token_labels.to(args.device) if args.mlm_ratio != 0. else None
