@@ -134,6 +134,31 @@ def paired_hinge_rank_loss_learning(
 
     return loss
 
+def info_nce_loss(
+        lang_output: torch.Tensor,
+        visn_output: torch.Tensor,
+        lang_mask: torch.Tensor,
+        tau=1.0
+):
+    batch_size, lang_len, dim = lang_output.shape
+
+    # Expand the visn_output to match each word
+    visn_output = visn_output.unsqueeze(1)
+    # [b, 1, dim]
+
+    # Scores of vision to language pairs
+    visn_lang_scores = (lang_output * visn_output.unsqueeze(1)).sum(-1)
+    # [b(visn), b(lang), max_len]
+    # (i,j): similarity between i-th image and j-th text
+    # diagonal: scores of positive pairs
+    visn_lang_scores = (visn_lang_scores.sum(-1)/tau).exp()
+    eye = torch.eye(visn_lang_scores.shape[0]).to(visn_lang_scores.device)
+    pos = (eye * visn_lang_scores).sum(1)
+    all_pair_div = torch.cat([pos / visn_lang_scores.sum(0), pos / visn_lang_scores.sum(1)])
+    loss = all_pair_div.log().neg().mean()
+    return loss
+
+
 # CLIP-based loss, a.k.a. in-batch loss, compose N-1 negative examples for each positive example
 # Based on the implementation by Masayasu
 def batchwise_hinge_rank_loss(
@@ -151,7 +176,6 @@ def batchwise_hinge_rank_loss(
     :return: a scalar loss
     """
     batch_size, lang_len, dim = lang_output.shape
-    assert batch_size % 2 == 0 and batch_size == visn_output.shape[0]
     assert margin > 0.
 
     # Expand the visn_output to match each word

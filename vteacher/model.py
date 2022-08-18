@@ -7,7 +7,7 @@ from torch import nn
 from transformers import *
 
 from transformers.modeling_bert import *
-from vteacher.loss import paired_hinge_rank_loss, batchwise_hinge_rank_loss, contrastive_loss
+from vteacher.loss import paired_hinge_rank_loss, batchwise_hinge_rank_loss, contrastive_loss, info_nce_loss
 
 BertLayerNorm = torch.nn.LayerNorm
 
@@ -41,7 +41,9 @@ class CoLBertConfig(BertConfig):
         self.verbose = False
         self.use_clip = True
         self.voken_hinge_loss = True
-        self.margin = 0.5
+        self.info_nce_loss = False
+        self.margin = 1
+        self.tau = 1
 
 
 class BertSharedHead(BertOnlyMLMHead):
@@ -224,13 +226,20 @@ class CoLwithBert(BertForMaskedLM):
         super().__init__(config)
         
         self.voken_hinge_loss = config.voken_hinge_loss
+        self.info_nce_loss = config.info_nce_loss
         self.margin = config.margin
         self.verbose = config.verbose
+        self.tau = config.tau
 
         self.token_cls_loss_fct = CrossEntropyLoss()
         # self.visual_hinge_head = BertVLMHingeHead(config)
         # self.contrastive_loss = paired_hinge_rank_loss 
-        self.contrastive_loss = batchwise_hinge_rank_loss
+        if config.info_nce_loss:
+            self.contrastive_loss = info_nce_loss
+        elif config.voken_hinge_loss:
+            self.contrastive_loss = batchwise_hinge_rank_loss
+        else: 
+            assert "No other loss supportted yet"
 
     def to(self, *args):
         return super().to(*args)
@@ -265,10 +274,13 @@ class CoLwithBert(BertForMaskedLM):
         voken_regression_loss = torch.tensor(0.0).to(sequence_output)
 
         if self.voken_hinge_loss:
-            #Check: why the output of sequence_output.norm(2, dim=-1, keepdim=True) is a constant number
             voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
             voken_prediction *= attention_mask.unsqueeze(-1)
             voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, 1.0) * 1.0                        
+        elif self.info_nce_loss:
+            voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
+            voken_prediction *= attention_mask.unsqueeze(-1)
+            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, self.tau) * 1.0                        
         
         if masked_lm_labels is not None:
             prediction_scores = self.cls(sequence_output)
