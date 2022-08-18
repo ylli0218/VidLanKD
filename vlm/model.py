@@ -167,14 +167,15 @@ class CoLwithBert(BertForMaskedLM):
         kd1_loss = torch.tensor(0.0).to(sequence_output)
         kd2_loss = torch.tensor(0.0).to(sequence_output)
         
-        teacher_sequence_output /= teacher_sequence_output.norm(2, dim=-1, keepdim=True)
         if self.do_kd1_objective:
+            teacher_sequence_output /= teacher_sequence_output.norm(2, dim=-1, keepdim=True)
             kd_pred1 = self.kd1_student_head(sequence_output)
             for i in range(sequence_output.size(0)):
                 kd1_loss += self.mmd_loss(kd_pred1[i:i+1].transpose(2,1), teacher_sequence_output[i:i+1].transpose(2,1))
             kd1_loss /= sequence_output.size(1)
             
         if self.do_kd2_objective:  
+            teacher_sequence_output /= teacher_sequence_output.norm(2, dim=-1, keepdim=True)
             kd_pred2 = self.kd2_student_head(sequence_output)
             kd_teacher2 = teacher_sequence_output
             for i in range(sequence_output.size(1)):
