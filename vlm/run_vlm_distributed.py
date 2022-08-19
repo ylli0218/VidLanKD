@@ -79,6 +79,7 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(20) #INFO level
 
 
 MODEL_CLASSES = {
@@ -268,6 +269,8 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
 
     global_step = 0
     epochs_trained = 0
+    update_step_current_epoch = 0
+    update_step_per_epoch = len(train_dataloader) // args.gradient_accumulation_steps
     # Check if continuing training from a checkpoint
     # if args.model_name_or_path and os.path.exists(args.model_name_or_path):
     #     try:
@@ -284,6 +287,26 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
     assert model_to_resize.config.vocab_size == len(tokenizer)
     # model_to_resize.resize_token_embeddings(len(tokenizer))
 
+    # Check if continuing training from a checkpoint
+    if args.model_name_or_path and os.path.exists(args.model_name_or_path):
+        try:
+            # path_to_model_dir/checkpoint-epoch<E>-step<S>/
+            checkpoint_suffixes = os.path.basename(args.model_name_or_path).split("-")
+            if len(checkpoint_suffixes) == 3:
+                epochs_trained = int(checkpoint_suffixes[1].replace("epoch", ""))
+                global_step = int(checkpoint_suffixes[2].replace("step", ""))
+                update_step_current_epoch = global_step - epochs_trained * update_step_per_epoch # Modified later with steps_trained_in_current_epoch 
+            # elif len(checkpoint_suffixes) == 2:
+            #     epochs_trained = int(checkpoint_suffixes[1].replace("epoch", ""))
+            #     steps_trained_in_current_epoch = global_step = epochs_trained * (len(train_dataloader) // args.gradient_accumulation_steps)
+            else:
+                raise ValueError
+
+            logger.info("  Continuing training from checkpoint, will skip to saved global_step")
+            logger.info("  Continuing training from epoch %d - step %d", epochs_trained, update_step_current_epoch)
+        except ValueError:
+            logger.info("  Do not load model from %s, restart training" % args.model_name_or_path)
+
     model.zero_grad()
     train_iterator = trange(
         epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.gpu != 0
@@ -298,6 +321,9 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
         if vteacher:
             vteacher.zero_grad()
         for step, (tokens, item_ids) in enumerate(epoch_iterator):
+            if update_step_current_epoch < update_step_per_epoch:
+                if step < update_step_current_epoch * args.gradient_accumulation_steps:
+                    continue
             token_inputs, token_labels = mask_tokens(tokens, tokenizer, args)
             token_inputs = token_inputs.to(args.device)
             token_labels = token_labels.to(args.device)
@@ -316,6 +342,7 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
                 print()
 
             model.train()
+            # model.eval()
             if args.do_kd1_objective or args.do_kd2_objective:
                 with torch.no_grad():                
                     teacher_output_prediction, teacher_voken_prediction, sequence_output = vteacher.predict(token_inputs,
@@ -324,7 +351,7 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
                     soft_labels = None
 #                     soft_labels = teacher_output_prediction.argmax(-1)
 #                     soft_labels[token_labels==-100] = -100
-                    teacher_voken_prediction = torch.tensor(teacher_voken_prediction.detach().cpu().numpy()).to(args.device)
+                    # teacher_voken_prediction = torch.tensor(teacher_voken_prediction.detach().cpu().numpy()).to(args.device)
                     sequence_output = torch.tensor(sequence_output.detach().cpu().numpy()).to(args.device)
             else:
                 teacher_voken_prediction = None
@@ -395,16 +422,23 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
                         tb_writer.add_scalar(loss_name, interval_loss[loss_idx], global_step)
                     logging_loss = tr_loss.copy()
 
+            if global_step > 0 and args.save_steps > 0 and global_step % args.save_steps == 0:
+                # Save it each epoch
+                if args.gpu == 0:
+                    # Save checkpoints
+                    checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
+                    save_model(args, checkpoint_name, model, tokenizer, optimizer, scheduler)
+
             if args.max_steps > 0 and global_step >= args.max_steps:
                 break
 
-#             if step == 1000:
-#                 break
+            # if step == 100:
+            #     break
             
         # Save it each epoch
         if args.gpu == 0:
             # Save checkpoints
-            checkpoint_name = "checkpoint-epoch%04d" % epoch
+            checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
             save_model(args, checkpoint_name, model, tokenizer, optimizer, scheduler)
 
             # last_path = os.path.join(args.output_dir, 'checkpoint-last')
@@ -467,6 +501,9 @@ def save_model(args, name, model, tokenizer, optimizer, scheduler):
 
     torch.save(args, os.path.join(output_dir, "training_args.bin"))
     logger.info("Saving model checkpoint to %s", output_dir)
+    torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+    torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+    logger.info("Saving optimizer and scheduler states to %s", output_dir)
 
     # torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
     # torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
@@ -663,6 +700,8 @@ def setup(gpu, args):
             do_kd2_objective=args.do_kd2_objective,
             margin=args.margin,
             verbose=(args.gpu == 0),
+            info_nce_loss=False, #place holder, to be consistent
+            tau=1,
             **config_kwargs
         )
     elif args.model_name_or_path:
@@ -689,10 +728,11 @@ def setup(gpu, args):
 
     if args.do_kd1_objective or args.do_kd2_objective:
         vteacher = VteacherBert(config=config)
-        model_weights = torch.load(args.teacher_dir+'pytorch_model.bin')
+        model_weights = torch.load(args.teacher_dir+'pytorch_model.bin', map_location=args.device)
         vteacher.load_state_dict(model_weights, strict=True)        
         vteacher.to(args.device)
         vteacher.eval()
+        logger.info(f"loaded teacher from {args.teacher_dir}")
     else:
         vteacher = None
     model.to(args.device)
@@ -701,15 +741,15 @@ def setup(gpu, args):
     if gpu == 0:
         torch.distributed.barrier()
 
-    if args.model_name_or_path:
-        if gpu == 0:
-            logger.info("Evaluate the performance of the loaded model.")
-            results = evaluate(args, valid_dataset, model, tokenizer)
-            for key, value in results.items():
-                logger.info("\t %s: %0.4f" % (key, value))
-            torch.distributed.barrier()
-        else:
-            torch.distributed.barrier()
+    # if args.model_name_or_path:
+    #     if gpu == 0:
+    #         logger.info("Evaluate the performance of the loaded model.")
+    #         results = evaluate(args, valid_dataset, model, tokenizer)
+    #         for key, value in results.items():
+    #             logger.info("\t %s: %0.4f" % (key, value))
+    #         torch.distributed.barrier()
+    #     else:
+    #         torch.distributed.barrier()
 
     logger.info("Training/evaluation parameters %s", args)
 

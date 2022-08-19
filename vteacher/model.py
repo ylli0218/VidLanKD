@@ -292,38 +292,39 @@ class CoLwithBert(BertForMaskedLM):
         return voken_contrastive_loss, voken_regression_loss, token_loss
 
     
-    # def predict(
-    #         self,
-    #         input_ids=None,
-    #         attention_mask=None,
-    #         token_type_ids=None,
-    #         position_ids=None,
-    #         head_mask=None,
-    #         inputs_embeds=None,
-    #         masked_lm_labels=None,
-    #         encoder_hidden_states=None,
-    #         encoder_attention_mask=None,
-    #         lm_labels=None,
-    #         voken_labels=None,
-    # ):
-    #     outputs = self.bert(
-    #         input_ids,
-    #         attention_mask=attention_mask,
-    #         token_type_ids=token_type_ids,
-    #         position_ids=position_ids,
-    #         head_mask=head_mask,
-    #         inputs_embeds=inputs_embeds,
-    #         encoder_hidden_states=encoder_hidden_states,
-    #         encoder_attention_mask=encoder_attention_mask,
-    #     )
-    #     sequence_output = outputs[0]        
-    #     voken_prediction = self.visual_hinge_head.predict(sequence_output, attention_mask)
+    def predict(
+            self,
+            input_ids=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            masked_lm_labels=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            lm_labels=None,
+            voken_labels=None,
+    ):
+        outputs = self.bert(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+        sequence_output = outputs[0]        
+        # voken_prediction = self.visual_hinge_head.predict(sequence_output, attention_mask)
+        voken_prediction = None # Not used here
             
-    #     if masked_lm_labels is not None:
-    #         prediction_scores = self.cls(sequence_output)
-    #     else:
-    #         prediction_scores = None
-    #     return prediction_scores, voken_prediction, sequence_output
+        if masked_lm_labels is not None:
+            prediction_scores = self.cls(sequence_output)
+        else:
+            prediction_scores = None
+        return prediction_scores, voken_prediction, sequence_output
     
     
     

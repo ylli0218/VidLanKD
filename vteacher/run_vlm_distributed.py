@@ -476,7 +476,6 @@ def train(args, train_dataset, valid_dataset,
         # Save it each epoch
         if args.gpu == 0:
             # Save checkpoints
-            checkpoint_name = "checkpoint-epoch%04d" % epoch
             checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
             save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
 
