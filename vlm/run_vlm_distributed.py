@@ -698,6 +698,7 @@ def setup(gpu, args):
             cache_dir=args.cache_dir,
             do_kd1_objective=args.do_kd1_objective,
             do_kd2_objective=args.do_kd2_objective,
+            no_nst_transpose=args.no_nst_transpose,
             margin=args.margin,
             verbose=(args.gpu == 0),
             info_nce_loss=False, #place holder, to be consistent

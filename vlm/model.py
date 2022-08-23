@@ -36,9 +36,12 @@ class CoLBertConfig(BertConfig):
         self.voken_dim = None
         self.do_kd1_objective = False
         self.do_kd2_objective = False
+        self.no_nst_transpose = False
         self.verbose = False
         self.voken_hinge_loss = True
         self.margin = 0.5
+        self.info_nce_loss = False # place holder, to be consistent
+        self.tau = 1
 
 
 class BertVLMClassificationHead(nn.Module):
@@ -114,6 +117,7 @@ class CoLwithBert(BertForMaskedLM):
         self.do_kd2_objective = config.do_kd2_objective
         self.verbose = config.verbose
         self.margin = config.margin      
+        self.no_nst_transpose = config.no_nst_transpose
 
         self.token_cls_loss_fct = CrossEntropyLoss()
         
@@ -127,7 +131,7 @@ class CoLwithBert(BertForMaskedLM):
             else:
                 self.contrastive_loss_item = contrastive_loss_item
             self.kd2_student_head = BertVLMHingeHead(config)
-            self.kd2_teacher_head = BertVLMHingeHead(config)
+            # self.kd2_teacher_head = BertVLMHingeHead(config)
 
     def to(self, *args):
         return super().to(*args)
@@ -170,17 +174,24 @@ class CoLwithBert(BertForMaskedLM):
         if self.do_kd1_objective:
             teacher_sequence_output /= teacher_sequence_output.norm(2, dim=-1, keepdim=True)
             kd_pred1 = self.kd1_student_head(sequence_output)
-            for i in range(sequence_output.size(0)):
-                kd1_loss += self.mmd_loss(kd_pred1[i:i+1].transpose(2,1), teacher_sequence_output[i:i+1].transpose(2,1))
-            kd1_loss /= sequence_output.size(1)
+            # kd1_loss += self.mmd_loss(kd_pred1.transpose(2,1), teacher_sequence_output.transpose(2,1))
+            if self.no_nst_transpose:
+                for i in range(sequence_output.size(0)):
+                    kd1_loss += self.mmd_loss(kd_pred1[i:i+1], teacher_sequence_output[i:i+1])
+            else:
+                for i in range(sequence_output.size(0)):
+                    kd1_loss += self.mmd_loss(kd_pred1[i:i+1].transpose(2,1), teacher_sequence_output[i:i+1].transpose(2,1))
+            kd1_loss /= sequence_output.size(0)
             
         if self.do_kd2_objective:  
             teacher_sequence_output /= teacher_sequence_output.norm(2, dim=-1, keepdim=True)
             kd_pred2 = self.kd2_student_head(sequence_output)
             kd_teacher2 = teacher_sequence_output
-            for i in range(sequence_output.size(1)):
-                kd2_loss += self.contrastive_loss_item(kd_pred2[:, i], kd_teacher2[:, i], 1.0) * 1.0
-            kd2_loss /= sequence_output.size(1)
+            loss = nn.MSELoss(reduction='mean')
+            kd2_loss = loss(kd_pred2, kd_teacher2)
+            # for i in range(sequence_output.size(1)):
+            #     kd2_loss += self.contrastive_loss_item(kd_pred2[:, i], kd_teacher2[:, i], 1.0) * 1.0
+            # kd2_loss /= sequence_output.size(1)
 
         if masked_lm_labels is not None:
             prediction_scores = self.cls(sequence_output)

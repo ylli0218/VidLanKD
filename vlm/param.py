@@ -68,6 +68,7 @@ def process_args():
     parser.add_argument("--do_kd1_objective", action='store_true', help='Will do mmd loss')
     parser.add_argument("--do_kd2_objective", action='store_true', help='Will do crd loss')
     parser.add_argument("--margin", default=0.5, type=float, help="Total number of training epochs to perform.")
+    parser.add_argument("--no_nst_transpose", action='store_true', help='there is a transpose operation before nst function, test whether it is necessary')
     
     # Batch Size and Training Steps
     parser.add_argument("--seed", type=int, default=95, help="random seed for initialization")
