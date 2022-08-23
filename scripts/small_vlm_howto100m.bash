@@ -6,7 +6,7 @@ NAME=$2
 
 # Pre-training
 # for conRatio in 0.1 0.3 1 3 10
-for conRatio in 0.1 0.3 3 10 
+for conRatio in 3
 do
     sleep 10
     # Create dirs and make backup
@@ -18,9 +18,9 @@ do
     # CHECKPOINT=$(ls -d ${PWD}/${output}/checkpoint-epoch* | tail -n 1)
     # CHECKPOINT=/dccstor/sentient1/git/VidLanKD/snap/vlm/bz128X2_cls_conRatio0.1/checkpoint-epoch0000-step000005000
     echo "find checkpoint: ${CHECKPOINT}"
-    jbsub -q x86_24h -cores 1+1 -mem 100g -require a100 -proj parallel_data -name train_pc \
+    jbsub -q x86_24h -cores 1+4 -mem 300g -require a100 -proj parallel_data -name train_pc_4gpu \
     " \
-    CUDA_VISIBLE_DEVICES=$1 python3 vteacher/run_vlm_distributed.py \
+    python3 vteacher/run_vlm_distributed.py \
         --output_dir=$output \
         --overwrite_output_dir \
         --config_name=vlm/configs/bert_base.json \
@@ -29,7 +29,7 @@ do
         --block_size=126 \
         --per_gpu_train_batch_size=128 \
         --per_gpu_eval_batch_size=128 \
-        --gradient_accumulation_steps=2 \
+        --gradient_accumulation_steps=1 \
         --num_train_epochs=20 \
         --learning_rate=5e-5 \
         --weight_decay=0.01 \
@@ -48,14 +48,14 @@ do
         --secLang_type='hfl/chinese-macbert-base' \
         --save_steps=20000 \
         --use_CLS_token \
-        --model_name_or_path=${CHECKPOINT} \
-        --mlm ${@:3} > $output/log.log 2>&1 "
+        --model_name_or_path=/dccstor/sentient1/git/VidLanKD/snap/vlm/bz128X1X4_trainZh_pretrainedBERT_conRatio3/checkpoint-epoch0014-step000141516 \
+        --mlm ${@:3} > $output/log_2.log 2>&1 "
 done
 
 
     # --secLang_type='hfl/chinese-macbert-base' \
 # CUDA_VISIBLE_DEVICES=$1 python3 -m debugpy --listen "${HOSTNAME}:15678" --wait-for-client vteacher/run_vlm_distributed.py \
-        # --model_name_or_path=/dccstor/sentient1/git/VidLanKD/snap/vlm/test_2gpus_2/checkpoint-epoch0002 \
+        # --model_name_or_path=/dccstor/sentient1/git/VidLanKD/snap/vlm/huggingface_bert_base_uncased \
 
 
 # CUDA_VISIBLE_DEVICES=$1 python3 -m debugpy --listen "${HOSTNAME}:15678" --wait-for-client vteacher/run_vlm_distributed.py \
