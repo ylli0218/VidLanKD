@@ -465,7 +465,15 @@ def train(args, train_dataset, valid_dataset,
                 if args.gpu == 0:
                     # Save checkpoints
                     checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
+                    logger.info(f"saving intermediate checkpoint in the middle of {epoch}th epoch, this is global step {global_step}")
                     save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
+                    results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+                    for key, value in results.items():
+                        logger.info("\t %s: %0.4f" % (key, value))
+                        tb_writer.add_scalar("eval_{}".format(key), value, global_step)
+                    tb_writer.add_scalar("epoch", epoch, global_step)
+                    output_eval_file = os.path.join(args.output_dir, checkpoint_name, "eval_results.json")
+                    json.dump(results, open(output_eval_file, 'w'), sort_keys=True, indent=4)
 
             if args.max_steps > 0 and global_step >= args.max_steps:
                 break
@@ -476,7 +484,8 @@ def train(args, train_dataset, valid_dataset,
         # Save it each epoch
         if args.gpu == 0:
             # Save checkpoints
-            checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
+            logger.info(f"finished training {epoch}th epoch, this is global step {global_step}")
+            checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch+1, global_step) # epoch + 1 for restart later
             save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
 
             # last_path = os.path.join(args.output_dir, 'checkpoint-last')
@@ -522,6 +531,9 @@ def train(args, train_dataset, valid_dataset,
             epoch_iterator.close()
             train_iterator.close()
             break
+
+        # Reset at the end of epoch
+        update_step_current_epoch = 0 
 
     if args.gpu == 0:
         tb_writer.close()

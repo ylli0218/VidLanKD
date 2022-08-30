@@ -427,18 +427,27 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
                 if args.gpu == 0:
                     # Save checkpoints
                     checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
+                    logger.info(f"saving intermediate checkpoint in the middle of {epoch}th epoch, this is global step {global_step}")
                     save_model(args, checkpoint_name, model, tokenizer, optimizer, scheduler)
+                    results = evaluate(args, valid_dataset, model, tokenizer, vteacher)
+                    for key, value in results.items():
+                        logger.info("\t %s: %0.4f" % (key, value))
+                        tb_writer.add_scalar("eval_{}".format(key), value, global_step)
+                    tb_writer.add_scalar("epoch", epoch, global_step)
+                    output_eval_file = os.path.join(args.output_dir, checkpoint_name, "eval_results.json")
+                    json.dump(results, open(output_eval_file, 'w'), sort_keys=True, indent=4)
 
             if args.max_steps > 0 and global_step >= args.max_steps:
                 break
 
             # if step == 100:
             #     break
-            
+
         # Save it each epoch
         if args.gpu == 0:
             # Save checkpoints
-            checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
+            logger.info(f"finished training {epoch}th epoch, this is global step {global_step}")
+            checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch+1, global_step) # epoch + 1 for restart later
             save_model(args, checkpoint_name, model, tokenizer, optimizer, scheduler)
 
             # last_path = os.path.join(args.output_dir, 'checkpoint-last')
@@ -484,6 +493,9 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
             epoch_iterator.close()
             train_iterator.close()
             break
+
+        # Reset at the end of epoch
+        update_step_current_epoch = 0 
 
     if args.gpu == 0:
         tb_writer.close()
@@ -730,7 +742,7 @@ def setup(gpu, args):
     if args.do_kd1_objective or args.do_kd2_objective:
         vteacher = VteacherBert(config=config)
         model_weights = torch.load(args.teacher_dir+'pytorch_model.bin', map_location=args.device)
-        vteacher.load_state_dict(model_weights, strict=True)        
+        vteacher.load_state_dict(model_weights, strict=False)        
         vteacher.to(args.device)
         vteacher.eval()
         logger.info(f"loaded teacher from {args.teacher_dir}")
