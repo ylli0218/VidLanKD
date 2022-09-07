@@ -66,7 +66,9 @@ def process_args():
     # VLM related params
     parser.add_argument("--teacher_dir", type=str)
     parser.add_argument("--do_kd1_objective", action='store_true', help='Will do mmd loss')
-    parser.add_argument("--do_kd2_objective", action='store_true', help='Will do crd loss')
+    parser.add_argument("--do_kd2_objective", action='store_true', help='mse loss function')
+    parser.add_argument("--do_soft_label_distill", action='store_true', help='soft label distillation')
+    parser.add_argument("--temperature", default=1, type=float, help='temperature')
     parser.add_argument("--margin", default=0.5, type=float, help="Total number of training epochs to perform.")
     parser.add_argument("--no_nst_transpose", action='store_true', help='there is a transpose operation before nst function, test whether it is necessary')
     

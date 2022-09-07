@@ -312,7 +312,7 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
         epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.gpu != 0
     )
     set_seed(args)  # Added here for reproducibility
-    LOSS_NAMES = ['kd1_loss', 'kd2_loss', 'token_loss', 'total_loss']
+    LOSS_NAMES = ['kd1_loss', 'kd2_loss', 'token_loss', 'soft_targets_loss', 'total_loss']
     for epoch in train_iterator:
         torch.cuda.empty_cache() 
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.gpu != 0)
@@ -343,20 +343,21 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
 
             model.train()
             # model.eval()
-            if args.do_kd1_objective or args.do_kd2_objective:
+            if args.do_kd1_objective or args.do_kd2_objective or args.do_soft_label_distill:
                 with torch.no_grad():                
                     teacher_output_prediction, teacher_voken_prediction, sequence_output = vteacher.predict(token_inputs,
                                     attention_mask=attention_mask,
                                     masked_lm_labels=token_labels)
                     soft_labels = None
 #                     soft_labels = teacher_output_prediction.argmax(-1)
-#                     soft_labels[token_labels==-100] = -100
+#                     soft_labels[toaken_labels==-100] = -100
                     # teacher_voken_prediction = torch.tensor(teacher_voken_prediction.detach().cpu().numpy()).to(args.device)
                     sequence_output = torch.tensor(sequence_output.detach().cpu().numpy()).to(args.device)
             else:
                 teacher_voken_prediction = None
                 soft_labels = None
                 sequence_output = None
+                teacher_output_prediction = None
             
             outputs = model(token_inputs,
                             attention_mask=attention_mask,
@@ -365,12 +366,14 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
                             vokens=teacher_voken_prediction,
                             teacher_sequence_output=sequence_output,
                             item_ids=item_ids,
+                            teacher_predicitons=teacher_output_prediction,
                             step=step)
             kd1_loss = outputs[0]
             kd2_loss = outputs[1]
             token_loss = outputs[2]
+            soft_targets_loss = outputs[3]
 
-            loss = args.voken_ratio * (kd1_loss + kd2_loss) + token_loss
+            loss = args.voken_ratio * (kd1_loss + kd2_loss + soft_targets_loss) + token_loss
 
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
@@ -384,6 +387,7 @@ def train(args, train_dataset, valid_dataset, model, tokenizer, vteacher) -> Tup
             tr_loss += np.array((kd1_loss.item() / args.gradient_accumulation_steps,
                                  kd2_loss.item() / args.gradient_accumulation_steps,
                                  token_loss.item() / args.gradient_accumulation_steps,
+                                 soft_targets_loss.item() / args.gradient_accumulation_steps,
                                  loss.item()))
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -552,6 +556,7 @@ def evaluate(args, eval_dataset, model, tokenizer, vteacher, prefix="") -> Dict:
     total_kd1_loss = 0.0
     total_kd2_loss = 0.0
     total_token_loss = 0.0
+    total_soft_targets_loss = 0.0
     nb_eval_steps = 0
     model.eval()
 
@@ -566,7 +571,7 @@ def evaluate(args, eval_dataset, model, tokenizer, vteacher, prefix="") -> Dict:
 #             attention_mask = None
 
         with torch.no_grad():
-            if args.do_kd1_objective or args.do_kd2_objective:
+            if args.do_kd1_objective or args.do_kd2_objective or args.do_soft_label_distill:
                 teacher_output_prediction, teacher_voken_prediction, sequence_output = vteacher.predict(token_inputs,
                                 attention_mask=attention_mask,
                                 masked_lm_labels=token_labels)
@@ -577,6 +582,7 @@ def evaluate(args, eval_dataset, model, tokenizer, vteacher, prefix="") -> Dict:
                 teacher_voken_prediction = None
                 soft_labels = None
                 sequence_output = None
+                teacher_output_prediction = None
                 
             outputs = model(token_inputs,
                             attention_mask=attention_mask,
@@ -585,14 +591,17 @@ def evaluate(args, eval_dataset, model, tokenizer, vteacher, prefix="") -> Dict:
                             vokens=teacher_voken_prediction,
                             teacher_sequence_output=sequence_output,
                             item_ids=item_ids,
+                            teacher_predicitons=teacher_output_prediction,
                             step=None)
             kd1_loss = outputs[0]
             kd2_loss = outputs[1]
             token_loss = outputs[2]
+            soft_targets_loss = outputs[3]
 
             total_kd1_loss += kd1_loss.item()
             total_kd2_loss += kd2_loss.item()
             total_token_loss += token_loss.item()
+            total_soft_targets_loss += soft_targets_loss.item()
 
         nb_eval_steps += 1
 
@@ -601,7 +610,8 @@ def evaluate(args, eval_dataset, model, tokenizer, vteacher, prefix="") -> Dict:
 
     result = {"perplexity": perplexity,
               "kd1_loss": total_kd1_loss / nb_eval_steps,
-              "kd2_loss": total_kd2_loss / nb_eval_steps,}
+              "kd2_loss": total_kd2_loss / nb_eval_steps,
+              "soft_target_loss": total_soft_targets_loss / nb_eval_steps}
     torch.cuda.empty_cache() 
 
     return result
@@ -645,6 +655,7 @@ def setup(gpu, args):
         world_size=args.world_size,
         rank=args.rank
     )
+    assert[args.do_kd1_objective, args.do_kd2_objective, args.do_soft_label_distill ].count(True) <= 1 # Only support single distillation for now
 
     # Setup logging
     logging.basicConfig(
@@ -711,6 +722,8 @@ def setup(gpu, args):
             do_kd1_objective=args.do_kd1_objective,
             do_kd2_objective=args.do_kd2_objective,
             no_nst_transpose=args.no_nst_transpose,
+            do_soft_label_distill=args.do_soft_label_distill,
+            temperature=args.temperature,
             margin=args.margin,
             verbose=(args.gpu == 0),
             info_nce_loss=False, #place holder, to be consistent
@@ -739,7 +752,7 @@ def setup(gpu, args):
 #     model_weights = torch.load('snap/vlm/wiki103_bert_small_vokenmmd_vokencrd/checkpoint-epoch0010/pytorch_model.bin')
 #     model.load_state_dict(model_weights, strict=True)
 
-    if args.do_kd1_objective or args.do_kd2_objective:
+    if args.do_kd1_objective or args.do_kd2_objective or args.do_soft_label_distill:
         vteacher = VteacherBert(config=config)
         model_weights = torch.load(args.teacher_dir+'pytorch_model.bin', map_location=args.device)
         vteacher.load_state_dict(model_weights, strict=False)        

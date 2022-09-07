@@ -37,6 +37,8 @@ class CoLBertConfig(BertConfig):
         self.do_kd1_objective = False
         self.do_kd2_objective = False
         self.no_nst_transpose = False
+        self.do_soft_label_distill = False
+        self.temperature = 1
         self.verbose = False
         self.voken_hinge_loss = True
         self.margin = 0.5
@@ -115,6 +117,8 @@ class CoLwithBert(BertForMaskedLM):
         super().__init__(config)
         self.do_kd1_objective = config.do_kd1_objective
         self.do_kd2_objective = config.do_kd2_objective
+        self.do_soft_label_distill = config.do_soft_label_distill
+        self.temperature = config.temperature
         self.verbose = config.verbose
         self.margin = config.margin      
         self.no_nst_transpose = config.no_nst_transpose
@@ -153,7 +157,7 @@ class CoLwithBert(BertForMaskedLM):
             teacher_sequence_output=None,
             item_ids=None,
             step=None,
-        
+            teacher_predicitons=None
     ):
         outputs = self.bert(
             input_ids,
@@ -170,6 +174,7 @@ class CoLwithBert(BertForMaskedLM):
         voken_cls_loss = torch.tensor(0.0).to(sequence_output)
         kd1_loss = torch.tensor(0.0).to(sequence_output)
         kd2_loss = torch.tensor(0.0).to(sequence_output)
+        soft_targets_loss = torch.tensor(0.0).to(sequence_output)
         
         if self.do_kd1_objective:
             teacher_sequence_output /= teacher_sequence_output.norm(2, dim=-1, keepdim=True)
@@ -200,8 +205,16 @@ class CoLwithBert(BertForMaskedLM):
                 masked_lm_labels.view(-1))
         else:
             token_loss = torch.tensor(0.)
+        
+        if self.do_soft_label_distill:
+           kl_div_loss = nn.KLDivLoss(reduction="batchmean")
+           soft_prob = nn.functional.log_softmax(prediction_scores / self.temperature, dim=-1)
+           soft_targets = nn.functional.softmax(teacher_predicitons / self.temperature, dim=-1)
+           soft_targets_loss = kl_div_loss(soft_prob, soft_targets) * (self.temperature ** 2)
 
-        return kd1_loss, kd2_loss, token_loss
+
+
+        return kd1_loss, kd2_loss, token_loss, soft_targets_loss
 
     
 class LangModel(CoLwithBert):
