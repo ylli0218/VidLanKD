@@ -68,7 +68,7 @@ from transformers import (
 )
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from vteacher.data import CoLDatasetPd, get_voken_feats
+from vteacher.data import CoLDatasetUnified, get_voken_feats
 from vteacher.param import process_args
 from vteacher.model import CoLBertConfig, CoLwithBert, VisnModel, SecLangModel
 
@@ -93,8 +93,8 @@ MODEL_CLASSES = {
 
 
 def load_and_cache_examples(args, mode, tokenizer, secLang_tokenizer, evaluate=False):
-#     file_path = args.eval_data_file if evaluate else args.train_data_file
-    return CoLDatasetPd(mode, tokenizer, secLang_tokenizer, args.block_size,
+    file_path = args.eval_data_file if evaluate else args.train_data_file
+    return CoLDatasetUnified(file_path, mode, args.tokenizer_name, tokenizer, secLang_tokenizer, args.block_size,
                       split_sent=args.split_sent, voken_dir=args.voken_dir,
                       suffix=args.voken_suffix,
                       verbose=(args.gpu == 0),
@@ -164,13 +164,15 @@ def train(args, train_dataset, valid_dataset,
     args.train_batch_size = args.per_gpu_train_batch_size
 
     def col_collate(examples):
-        tokens, vokens = zip(*examples)
+        tokens, vokens, non_pc_tokens = zip(*examples)
         if tokenizer._pad_token is None:
             tokens = pad_sequence(tokens, batch_first=True)
+            non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True)
         else:
             tokens = pad_sequence(tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
+            non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
         vokens = pad_sequence(vokens, batch_first=True, padding_value=-100)
-        return tokens, vokens
+        return tokens, vokens, non_pc_tokens
 
     if args.shuffle:
         logger.info(f"Shuffle the dataset in training,"
@@ -340,14 +342,14 @@ def train(args, train_dataset, valid_dataset,
         epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.gpu != 0
     )
     set_seed(args)  # Added here for reproducibility
-    LOSS_NAMES = ['token_loss', 'voken_contra_loss', 'voken_reg_loss', 'total_loss']
+    LOSS_NAMES = ['token_loss', 'voken_contra_loss', 'non_pc_token_loss', 'total_loss']
     for epoch in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.gpu != 0)
         tr_loss, logging_loss = np.zeros(len(LOSS_NAMES)), 0.0
         model.zero_grad()
         if secLang_model is not None:
             secLang_model.zero_grad()
-        for step, (tokens, vokens) in enumerate(epoch_iterator):
+        for step, (tokens, vokens, non_pc_tokens) in enumerate(epoch_iterator):
             if update_step_current_epoch < update_step_per_epoch:
                 if step < update_step_current_epoch * args.gradient_accumulation_steps:
                     continue
@@ -355,6 +357,11 @@ def train(args, train_dataset, valid_dataset,
             token_inputs = token_inputs.to(args.device)
             token_labels = token_labels.to(args.device) if args.mlm_ratio != 0. else None
             voken_labels = voken_labels.to(args.device)
+
+            non_pc_token_inputs, non_pc_token_labels, _, = mask_tokens(non_pc_tokens, None, tokenizer, args)
+            non_pc_token_inputs = non_pc_token_inputs.to(args.device) 
+            non_pc_token_labels = non_pc_token_labels.to(args.device) if args.mlm_ratio != 0. else None
+
             # Using default position id for language models
             # voken_masks = torch.ones_like(voken_labels)[:,:,-1].to(args.device)
             # token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
@@ -364,6 +371,7 @@ def train(args, train_dataset, valid_dataset,
             # position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
             # If some of the input is padded, then the attention mask is needed
             attention_mask = (token_inputs != tokenizer.pad_token_id)         # word_tokens --> 1, pad_token --> 0
+            non_pc_attention_mask = (non_pc_token_inputs != tokenizer.pad_token_id)
 
             if epoch == 0 and step < 3 and args.gpu == 0:
                 print()
@@ -393,15 +401,19 @@ def train(args, train_dataset, valid_dataset,
                             attention_mask=attention_mask,
                             masked_lm_labels=token_labels,
                             voken_labels=visn_output,
+                            non_pc_token_inputs = non_pc_token_inputs,
+                            non_pc_attention_mask = non_pc_attention_mask,
+                            non_pc_masked_lm_labels = non_pc_token_labels
                             )
             voken_contra_loss = outputs[0]
-            voken_reg_loss = outputs[1]
-            token_loss = outputs[2]
+            token_loss = outputs[1]
+            non_pc_token_loss = outputs[2]
             
             if args.mlm_ratio == 0.:
-                loss = args.contra_ratio * voken_contra_loss + voken_reg_loss
+                loss = args.contra_ratio * voken_contra_loss 
             else:
-                loss = args.contra_ratio * voken_contra_loss + voken_reg_loss + args.mlm_ratio * token_loss
+                loss = args.contra_ratio * voken_contra_loss + args.mlm_ratio * (token_loss + non_pc_token_loss) 
+                # loss = args.contra_ratio * voken_contra_loss + non_pc_token_loss
 
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
@@ -420,7 +432,7 @@ def train(args, train_dataset, valid_dataset,
 
             tr_loss += np.array((token_loss.item() / args.gradient_accumulation_steps,
                                  voken_contra_loss.item() / args.gradient_accumulation_steps,
-                                 voken_reg_loss.item() / args.gradient_accumulation_steps,
+                                 non_pc_token_loss.item() / args.gradient_accumulation_steps,
                                  loss.item()))
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -571,13 +583,15 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
     # Note that DistributedSampler samples randomly
 
     def col_collate(examples):
-        tokens, vokens = zip(*examples)
+        tokens, vokens, non_pc_tokens = zip(*examples)
         if tokenizer._pad_token is None:
             tokens = pad_sequence(tokens, batch_first=True)
+            non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True)
         else:
             tokens = pad_sequence(tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
+            non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
         vokens = pad_sequence(vokens, batch_first=True, padding_value=-100)
-        return tokens, vokens
+        return tokens, vokens, non_pc_tokens
 
     eval_sampler = SequentialSampler(eval_dataset)
     eval_dataloader = DataLoader(
@@ -590,17 +604,21 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
     logger.info("  Batch size = %d", args.eval_batch_size)
     total_token_loss = 0.0
     total_voken_contra_loss = 0.0
-    total_voken_reg_loss = 0.0
+    total_non_pc_token_loss = 0.0
     nb_eval_steps = 0
     model.eval()
     if secLang_model is not None:
         secLang_model.eval()
 
-    for tokens, vokens in tqdm(eval_dataloader, desc="Evaluating"):
+    for tokens, vokens, non_pc_tokens in tqdm(eval_dataloader, desc="Evaluating"):
         token_inputs, token_labels, voken_labels = mask_tokens(tokens, vokens, tokenizer, args)
         token_inputs = token_inputs.to(args.device)
         token_labels = token_labels.to(args.device) if args.mlm_ratio != 0 else None
         voken_labels = voken_labels.to(args.device)
+
+        non_pc_token_inputs, non_pc_token_labels, _, = mask_tokens(non_pc_tokens, None, tokenizer, args)
+        non_pc_token_inputs = non_pc_token_inputs.to(args.device)
+        non_pc_token_labels = non_pc_token_labels.to(args.device)
         # Using default position id for language models
         # voken_masks = torch.ones_like(voken_labels)[:,:,-1].to(args.device)
         # token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
@@ -610,6 +628,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
         # position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
         # If some of the input is padded, then the attention mask is needed
         attention_mask = (token_inputs != tokenizer.pad_token_id)  # word_tokens --> 1, pad_token --> 0
+        non_pc_attention_mask = (non_pc_token_inputs != tokenizer.pad_token_id)
 
         with torch.no_grad():
             if args.voken_hinge_loss or args.info_nce_loss:
@@ -625,25 +644,31 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
                             attention_mask=attention_mask,
                             masked_lm_labels=token_labels,
                             voken_labels=visn_output,
+                            non_pc_token_inputs = non_pc_token_inputs,
+                            non_pc_attention_mask = non_pc_attention_mask,
+                            non_pc_masked_lm_labels = non_pc_token_labels
                             )
             voken_contra_loss = outputs[0]
-            voken_reg_loss = outputs[1]
-            token_loss = outputs[2]
+            token_loss = outputs[1]
+            non_pc_token_loss = outputs[2]
 
             total_voken_contra_loss += voken_contra_loss.item()
-            total_voken_reg_loss += voken_reg_loss.item()
+            total_non_pc_token_loss += non_pc_token_loss.item()
             total_token_loss += token_loss.item()
 
         nb_eval_steps += 1
 #         if nb_eval_steps >= 100:
 #             break
     total_token_loss = total_token_loss / nb_eval_steps
+    total_non_pc_token_loss= total_non_pc_token_loss / nb_eval_steps
     perplexity = torch.exp(torch.tensor(total_token_loss)).item()
+    perplexity_non_pc = torch.exp(torch.tensor(total_non_pc_token_loss)).item()
 
     result = {"perplexity": perplexity,
+              "perplexity_non_pc": perplexity_non_pc,    
               "total_token_loss": total_token_loss,    
               "voken_contra_loss": total_voken_contra_loss / nb_eval_steps,
-              "voken_reg_loss": total_voken_reg_loss / nb_eval_steps}
+              "non_pc_token_loss": total_non_pc_token_loss }
     torch.cuda.empty_cache() 
 
     return result

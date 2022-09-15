@@ -249,39 +249,6 @@ class CoLDatasetPd(Dataset):
 
         return input_ids_en, input_ids_nonEn 
         
-    # def _load_indexed_video_feature_untied(self, feat_resnet, feat_bn, timestamp_st, timestamp_ed):
-    #     """ Untied version: [VID], ..., [VID], [PAD], ..., [PAD], len == max_v_len
-    #     Returns:
-    #         feat is padded to length of (self.max_v_len,)
-    #         mask: self.max_v_len, with 1 indicates valid bits, 0 indicates padding
-    #     """
-    #     max_v_l = self.max_v_len
-    #     st3d, ed3d = min(math.floor(timestamp_st * 24.0/16.0), len(feat_bn)-2), min(math.ceil(timestamp_ed * 24.0/16.0), len(feat_bn)-1)
-    #     indexed_feat_len_3d = ed3d - st3d + 1
-
-    #     st2d, ed2d = min(math.floor(timestamp_st * 1), len(feat_resnet)-2), min(math.ceil(timestamp_ed * 1), len(feat_resnet)-1)
-    #     indexed_feat_len_2d = ed2d - st2d + 1
-    #     if indexed_feat_len_2d > max_v_l:
-    #         downsamlp_indices3d = np.linspace(st3d, ed3d, max_v_l, endpoint=True).astype(np.int).tolist()
-    #         downsamlp_indices2d = np.linspace(st2d, ed2d, max_v_l, endpoint=True).astype(np.int).tolist()
-    #         assert max(downsamlp_indices3d) < len(feat_bn) and max(downsamlp_indices2d) < len(feat_resnet)
-    #         feat = np.concatenate([feat_resnet[downsamlp_indices2d], feat_bn[downsamlp_indices3d]], -1)  # truncate, sample???
-            
-    #         input_mask = np.ones(
-    #         [self.max_v_len, self.max_v_len], dtype=int)
-    #     else:
-    #         downsamlp_indices3d = np.linspace(st3d, ed3d, indexed_feat_len_2d, endpoint=True).astype(np.int).tolist()  
-    #         if self.use_clip:
-    #             feat = np.zeros((max_v_l, 2048+2048+512))  # only video features and padding
-    #         else:
-    #             feat = np.zeros((max_v_l, 2048+2048))
-    #         valid_l = ed2d - st2d + 1
-    #         feat[:valid_l] = np.concatenate([feat_resnet[st2d:ed2d + 1], feat_bn[downsamlp_indices3d]], -1)
-    #         input_mask = np.zeros(
-    #         [self.max_v_len, self.max_v_len], dtype=int)
-    #         input_mask[:, :len(feat)].fill(1)  
-    #     return feat, input_mask
-        
     def maybe_do_sent_level(self, vokens):
         if not self.sent_level:
             return vokens
@@ -322,6 +289,157 @@ class CoLDatasetPd(Dataset):
         token_end = self.batches[item + 1]
         return token_start, token_end
 
+class CoLDatasetUnified(Dataset):
+    IGNORE_ID = -100
+    sent_strategy = 'first'
+
+    def __init__(self, file_path, mode, tokenizer_name, tokenizer, secLang_tokenizer, block_size=512,
+                 split_sent=False, voken_dir=None, suffix=None, verbose=False,
+                 voken_ablation=None, use_clip=None):
+        if mode == 'train':
+            with open(feature_dir + 'train.tsv') as f:
+                self.data = f.readlines()
+        else:
+            with open(feature_dir + 'valid.tsv') as f:
+                self.data = f.readlines()
+        print(len(self.data)) 
+        self.sent_len = block_size + 2 #including specidal tokens
+        self.tokenizer = tokenizer
+        self.secLang_tokenizer = secLang_tokenizer
+
+        # Load english only MLM training data
+        token_path = file_path + '.' + tokenizer_name + '.hdf5'
+        assert os.path.isfile(token_path)
+        if verbose:
+            print("-------- Load Data -------")
+            print("Load tokens from", token_path)
+        self.token_hdf5 = h5py.File(token_path, 'r')
+        self.tokens = self.token_hdf5['tokens']
+        self.verbose = verbose
+        self._iter_cnt = 0
+        # Split for every block_size tokens
+        # The last block without full length will be dropped.
+        num_tokens = len(self.tokens)
+        self.starts = list(range(0, num_tokens, block_size))
+        self.batches = list(zip(self.starts[:-1], self.starts[1:]))
+
+#         self.batches = self.batches[len(self.batches)//2:]
+        manual_filtered =False
+        if "en.train.raw" in file_path and tokenizer_name == "bert-base-uncased":
+            self.batches = manual_filter(self.batches)
+            if verbose:
+                print("Data: Mannually filter the range for counties.")
+            manual_filtered = True
+
+        block_check(self.batches, block_size, fixed_size=True, manual_filtered=manual_filtered)
+        pc_len = len(self.data)
+        nonpc_len = len(self.batches)
+
+        # Make two dataset the same length
+        if pc_len > nonpc_len:
+            print("non parallel data size is smaller than parallel data")
+            print("expending non parallel data to match the size")
+            div, mod = pc_len // nonpc_len, pc_len % nonpc_len
+            self.batches = self.batches * div + self.batches[:mod]
+            assert(pc_len == len(self.batches))
+        elif pc_len < nonpc_len:
+            print("parallel data size is smaller than non parallel data")
+            print("expending parallel data to match the size")
+            div, mod = nonpc_len // pc_len, nonpc_len % pc_len
+            self.data = self.data * div + self.data[:mod]
+            assert(pc_len == len(self.batches))
+
+        # batch_info
+        if verbose:
+            print("Split sent with block size", block_size)
+            print(f"Total tokens: {len(self.tokens)}")
+            print(f"Total sentences: {nonpc_len}")
+            print(f"Total sentences after data expension: {len(self.batches)}")
+            print()
+
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, item):
+        example = self.data[item].strip()
+        example = example.split('\t')
+        sent_en, sent_nonEn = example[0], example[1]
+        
+        #Pad each sentence to sent_len. Could also try combine multiple sentence together for later
+        encoded_sent_en = self.tokenizer.encode_plus(
+            sent_en,
+            add_special_tokens=True,
+            max_length=self.sent_len,
+            truncation=True,
+            pad_to_max_length=True,
+            padding='max_length',
+            return_tensors='pt'     # Return PyTorch (pt) tensors
+        )
+        encoded_sent_nonEn = self.secLang_tokenizer.encode_plus(
+            sent_nonEn,
+            add_special_tokens=True,
+            max_length=self.sent_len,
+            truncation=True,
+            pad_to_max_length=True,
+            padding='max_length',
+            return_tensors='pt'     # Return PyTorch (pt) tensors
+        )
+        
+        input_ids_en = encoded_sent_en['input_ids'][0]
+        input_ids_nonEn = encoded_sent_nonEn['input_ids'][0]
+
+        # Tokenize non-parallel data
+        token_start, token_end = self.batches[item]
+        if self._iter_cnt < 5 and self.verbose:
+            print(f"Data Loader: data iteration {self._iter_cnt}, with range {token_start} to {token_end}.")
+            self._iter_cnt += 1
+        tokens = list(self.tokens[token_start: token_end])
+        token_tensor = torch.tensor(
+            self.tokenizer.build_inputs_with_special_tokens(tokens),
+            dtype=torch.long)
+
+        return input_ids_en, input_ids_nonEn, token_tensor
+        
+    def maybe_do_sent_level(self, vokens):
+        if not self.sent_level:
+            return vokens
+        else:
+            if self.sent_strategy == 'all':
+                vokens = [
+                    (-voken-1 if voken < 0 else voken)
+                    for voken in vokens
+                ]
+            elif self.sent_strategy == 'first':
+                vokens = [
+                    (self.IGNORE_ID if voken < 0 else voken)
+                    for voken in vokens
+                ]
+            return vokens
+
+    def maybe_do_ablation_study(self, vokens, tokens):
+        if self.voken_ablation is None:
+            return vokens
+        else:
+            if self._iter_cnt < 5 and self.verbose:
+                print("Before voken ablation: ", vokens)
+            if self.voken_ablation == 'random':
+                vokens = [random.randint(0, self.voken_size - 1)
+                          for _ in range(len(vokens))]
+            elif self.voken_ablation == 'shuffle':
+                random.shuffle(vokens)
+            elif self.voken_ablation == 'reverse':
+                vokens = vokens[::-1]
+            elif self.voken_ablation == 'token':
+                vokens = tokens
+            if self._iter_cnt < 5 and self.verbose:
+                print("After voken ablation: ", vokens)
+            return vokens
+
+    def get_item_info(self, item):
+        token_start = self.batches[item]
+        token_end = self.batches[item + 1]
+        return token_start, token_end
 
 FORBIDDEN_RANGE = (
     119314944,      # Start of iter 3700

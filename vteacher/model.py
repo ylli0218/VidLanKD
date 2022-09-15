@@ -256,6 +256,9 @@ class CoLwithBert(BertForMaskedLM):
             encoder_hidden_states=None,
             encoder_attention_mask=None,
             voken_labels=None,
+            non_pc_token_inputs=None,
+            non_pc_attention_mask=None,
+            non_pc_masked_lm_labels=None
     ):
         outputs = self.bert(
             input_ids,
@@ -270,8 +273,20 @@ class CoLwithBert(BertForMaskedLM):
         sequence_output = outputs[0]
         pooled_output = outputs[1]
 
+        non_pc_outputs = self.bert(
+            non_pc_token_inputs,
+            attention_mask=non_pc_attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+        non_pc_sequence_output = non_pc_outputs[0]
+        non_pc_pooled_output = non_pc_outputs[1]
+
         voken_contrastive_loss = torch.tensor(0.0).to(sequence_output)
-        voken_regression_loss = torch.tensor(0.0).to(sequence_output)
 
         if self.voken_hinge_loss:
             voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
@@ -289,7 +304,15 @@ class CoLwithBert(BertForMaskedLM):
                 masked_lm_labels.view(-1))
         else:
             token_loss = torch.tensor(0.)
-        return voken_contrastive_loss, voken_regression_loss, token_loss
+
+        if non_pc_masked_lm_labels is not None:
+            non_pc_prediction_scores = self.cls(non_pc_sequence_output)
+            non_pc_token_loss = self.token_cls_loss_fct(
+                non_pc_prediction_scores.view(-1, self.config.vocab_size),
+                non_pc_masked_lm_labels.view(-1))
+        else:
+            non_pc_token_loss = torch.tensor(0.)
+        return voken_contrastive_loss, token_loss, non_pc_token_loss
 
     
     def predict(
