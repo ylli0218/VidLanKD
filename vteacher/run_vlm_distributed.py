@@ -71,6 +71,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vteacher.data import CoLDatasetUnified, get_voken_feats
 from vteacher.param import process_args
 from vteacher.model import CoLBertConfig, CoLwithBert, VisnModel, SecLangModel
+from vteacher.continuable_sampler import ContinuableSampler
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -179,12 +180,19 @@ def train(args, train_dataset, valid_dataset,
                        f"GPU: {args.gpu},"
                        f"Rank: {args.rank},"
                        f"Total: {args.world_size}")
-    train_sampler = DistributedSampler(
+    base_sampler = DistributedSampler(
         train_dataset,
         num_replicas=args.world_size,
         rank=args.rank,
         shuffle=True,
     )
+    if args.model_name_or_path:
+        loaded_state = torch.load(os.path.join(args.model_name_or_path, "sampler_state.pt"), map_location=args.device)
+        train_sampler = ContinuableSampler(base_sampler,
+                                            resume_index=loaded_state["resume_index"],
+                                            generator_state=loaded_state["generator_state"])
+    else :
+        train_sampler = ContinuableSampler(base_sampler)
     train_dataloader = DataLoader(
         train_dataset, sampler=train_sampler, num_workers=0,
         batch_size=args.train_batch_size, collate_fn=col_collate, pin_memory=True
@@ -350,9 +358,9 @@ def train(args, train_dataset, valid_dataset,
         if secLang_model is not None:
             secLang_model.zero_grad()
         for step, (tokens, vokens, non_pc_tokens) in enumerate(epoch_iterator):
-            if update_step_current_epoch < update_step_per_epoch:
-                if step < update_step_current_epoch * args.gradient_accumulation_steps:
-                    continue
+            # if update_step_current_epoch < update_step_per_epoch:
+            #     if step < update_step_current_epoch * args.gradient_accumulation_steps:
+            #         continue
             token_inputs, token_labels, voken_labels = mask_tokens(tokens, vokens, tokenizer, args)
             token_inputs = token_inputs.to(args.device)
             token_labels = token_labels.to(args.device) if args.mlm_ratio != 0. else None
@@ -478,7 +486,11 @@ def train(args, train_dataset, valid_dataset,
                     # Save checkpoints
                     checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch, global_step)
                     logger.info(f"saving intermediate checkpoint in the middle of {epoch}th epoch, this is global step {global_step}")
-                    save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
+                    resume_index = train_dataloader.sampler.get_resume_index()
+                    generator_state = train_dataloader.sampler.get_generator_state()
+                    sampler_state = {"resume_index": resume_index,
+                                    "generator_state": generator_state}
+                    save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler, sampler_state)
                     results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
                     for key, value in results.items():
                         logger.info("\t %s: %0.4f" % (key, value))
@@ -498,7 +510,11 @@ def train(args, train_dataset, valid_dataset,
             # Save checkpoints
             logger.info(f"finished training {epoch}th epoch, this is global step {global_step}")
             checkpoint_name = "checkpoint-epoch%04d-step%09d" % (epoch+1, global_step) # epoch + 1 for restart later
-            save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler)
+            resume_index = train_dataloader.sampler.get_resume_index()
+            generator_state = train_dataloader.sampler.get_generator_state()
+            sampler_state = {"resume_index": resume_index,
+                            "generator_state": generator_state}
+            save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler, sampler_state)
 
             # last_path = os.path.join(args.output_dir, 'checkpoint-last')
             # if os.path.exists(last_path):
@@ -551,7 +567,7 @@ def train(args, train_dataset, valid_dataset,
         tb_writer.close()
 
 
-def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler):
+def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler, sampler_state):
     # Save model checkpoint
     output_dir = os.path.join(args.output_dir, name)
     os.makedirs(output_dir, exist_ok=True)
@@ -572,6 +588,7 @@ def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler
     torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
     torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
     logger.info("Saving optimizer and scheduler states to %s", output_dir)
+    torch.save(sampler_state, os.path.join(output_dir, "sampler_state.pt"))
 
 
 def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix="") -> Dict:
