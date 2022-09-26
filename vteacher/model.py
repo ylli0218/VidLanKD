@@ -476,7 +476,7 @@ class SecLangModel(nn.Module):
         else:
             _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
             
-        x = self.mlp_map(x)         # [b, dim]
+        # x = self.mlp_map(x)         # [b, dim]
         x = x / x.norm(2, dim=-1, keepdim=True)
         return x
 
