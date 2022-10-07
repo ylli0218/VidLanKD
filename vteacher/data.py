@@ -293,7 +293,7 @@ class CoLDatasetUnified(Dataset):
     IGNORE_ID = -100
     sent_strategy = 'first'
 
-    def __init__(self, file_path, mode, tokenizer_name, tokenizer, secLang_tokenizer, block_size=512,
+    def __init__(self, file_path, mode, tokenizer_name, tokenizer, secLang_tokenizer, block_size=512, pc_sent_len=64,
                  split_sent=False, voken_dir=None, suffix=None, verbose=False,
                  voken_ablation=None, use_clip=None):
         if mode == 'train':
@@ -304,6 +304,7 @@ class CoLDatasetUnified(Dataset):
                 self.data = f.readlines()
         print(len(self.data)) 
         self.sent_len = block_size + 2 #including specidal tokens
+        self.pc_sent_len = pc_sent_len + 2 #including specidal tokens
         self.tokenizer = tokenizer
         self.secLang_tokenizer = secLang_tokenizer
 
@@ -347,7 +348,8 @@ class CoLDatasetUnified(Dataset):
             print("expending parallel data to match the size")
             div, mod = nonpc_len // pc_len, nonpc_len % pc_len
             self.data = self.data * div + self.data[:mod]
-            assert(pc_len == len(self.batches))
+            assert(len(self.data)== len(self.batches))
+
 
         # batch_info
         if verbose:
@@ -364,13 +366,13 @@ class CoLDatasetUnified(Dataset):
     def __getitem__(self, item):
         example = self.data[item].strip()
         example = example.split('\t')
-        sent_en, sent_nonEn = example[0], example[1]
+        sent_en, sent_nonEn, align_indexes = example[0], example[1], example[2]
         
         #Pad each sentence to sent_len. Could also try combine multiple sentence together for later
         encoded_sent_en = self.tokenizer.encode_plus(
             sent_en,
             add_special_tokens=True,
-            max_length=self.sent_len,
+            max_length=self.pc_sent_len,
             truncation=True,
             pad_to_max_length=True,
             padding='max_length',
@@ -379,7 +381,7 @@ class CoLDatasetUnified(Dataset):
         encoded_sent_nonEn = self.secLang_tokenizer.encode_plus(
             sent_nonEn,
             add_special_tokens=True,
-            max_length=self.sent_len,
+            max_length=self.pc_sent_len,
             truncation=True,
             pad_to_max_length=True,
             padding='max_length',
@@ -399,7 +401,7 @@ class CoLDatasetUnified(Dataset):
             self.tokenizer.build_inputs_with_special_tokens(tokens),
             dtype=torch.long)
 
-        return input_ids_en, input_ids_nonEn, token_tensor
+        return input_ids_en, input_ids_nonEn, token_tensor, align_indexes
         
     def maybe_do_sent_level(self, vokens):
         if not self.sent_level:

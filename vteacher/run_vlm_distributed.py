@@ -95,7 +95,7 @@ MODEL_CLASSES = {
 
 def load_and_cache_examples(args, mode, tokenizer, secLang_tokenizer, evaluate=False):
     file_path = args.eval_data_file if evaluate else args.train_data_file
-    return CoLDatasetUnified(file_path, mode, args.tokenizer_name, tokenizer, secLang_tokenizer, args.block_size,
+    return CoLDatasetUnified(file_path, mode, args.tokenizer_name, tokenizer, secLang_tokenizer, args.block_size, args.pc_sent_len,
                       split_sent=args.split_sent, voken_dir=args.voken_dir,
                       suffix=args.voken_suffix,
                       verbose=(args.gpu == 0),
@@ -165,7 +165,7 @@ def train(args, train_dataset, valid_dataset,
     args.train_batch_size = args.per_gpu_train_batch_size
 
     def col_collate(examples):
-        tokens, vokens, non_pc_tokens = zip(*examples)
+        tokens, vokens, non_pc_tokens, align_indexes = zip(*examples)
         if tokenizer._pad_token is None:
             tokens = pad_sequence(tokens, batch_first=True)
             non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True)
@@ -173,7 +173,7 @@ def train(args, train_dataset, valid_dataset,
             tokens = pad_sequence(tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
             non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
         vokens = pad_sequence(vokens, batch_first=True, padding_value=-100)
-        return tokens, vokens, non_pc_tokens
+        return tokens, vokens, non_pc_tokens, align_indexes
 
     if args.shuffle:
         logger.info(f"Shuffle the dataset in training,"
@@ -357,7 +357,7 @@ def train(args, train_dataset, valid_dataset,
         model.zero_grad()
         if secLang_model is not None:
             secLang_model.zero_grad()
-        for step, (tokens, vokens, non_pc_tokens) in enumerate(epoch_iterator):
+        for step, (tokens, vokens, non_pc_tokens, align_indexes) in enumerate(epoch_iterator):
             # if update_step_current_epoch < update_step_per_epoch:
             #     if step < update_step_current_epoch * args.gradient_accumulation_steps:
             #         continue
@@ -400,7 +400,8 @@ def train(args, train_dataset, valid_dataset,
                 # voken_masks = (voken_labels!=0.0)[:,:,-1]
                 voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
                 token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
+                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids, align_indexes=align_indexes)
+                # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
                 # visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
             else:
                 visn_output = None
@@ -600,7 +601,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
     # Note that DistributedSampler samples randomly
 
     def col_collate(examples):
-        tokens, vokens, non_pc_tokens = zip(*examples)
+        tokens, vokens, non_pc_tokens, align_indexes = zip(*examples)
         if tokenizer._pad_token is None:
             tokens = pad_sequence(tokens, batch_first=True)
             non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True)
@@ -608,7 +609,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
             tokens = pad_sequence(tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
             non_pc_tokens = pad_sequence(non_pc_tokens, batch_first=True, padding_value=tokenizer.pad_token_id)
         vokens = pad_sequence(vokens, batch_first=True, padding_value=-100)
-        return tokens, vokens, non_pc_tokens
+        return tokens, vokens, non_pc_tokens, align_indexes
 
     eval_sampler = SequentialSampler(eval_dataset)
     eval_dataloader = DataLoader(
@@ -627,7 +628,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
     if secLang_model is not None:
         secLang_model.eval()
 
-    for tokens, vokens, non_pc_tokens in tqdm(eval_dataloader, desc="Evaluating"):
+    for tokens, vokens, non_pc_tokens, align_indexes in tqdm(eval_dataloader, desc="Evaluating"):
         token_inputs, token_labels, voken_labels = mask_tokens(tokens, vokens, tokenizer, args)
         token_inputs = token_inputs.to(args.device)
         token_labels = token_labels.to(args.device) if args.mlm_ratio != 0 else None
@@ -653,7 +654,8 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
                 # voken_masks = (voken_labels!=0.0)[:,:,-1]
                 voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
                 token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
+                # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
+                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids, align_indexes=align_indexes)
             else:
                 visn_output = None
         

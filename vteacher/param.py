@@ -24,6 +24,9 @@ def process_args():
              "The training dataset will be truncated in block of this size for training."
              "Default to the model max input length for single sentence inputs (take into account special tokens).",
     )
+    parser.add_argument(
+        "--pc_sent_len", default=62, type=int,
+    )
 
     # Logging and Saving
     parser.add_argument("--logging_steps", type=int, default=500, help="Log every X updates steps.")

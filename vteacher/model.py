@@ -9,6 +9,8 @@ from transformers import *
 from transformers.modeling_bert import *
 from vteacher.loss import paired_hinge_rank_loss, batchwise_hinge_rank_loss, contrastive_loss, info_nce_loss
 
+import copy
+
 BertLayerNorm = torch.nn.LayerNorm
 
 
@@ -464,20 +466,41 @@ class SecLangModel(nn.Module):
             nn.Linear(config.hidden_size, config.hidden_size),
         )
 
-    def forward(self, video_features, video_mask, token_type_ids=None, position_ids=None):
+    def forward(self, video_features, video_mask, token_type_ids=None, position_ids=None, align_indexes=None):
         """
         :param img: a tensor of shape [batch_size, H, W, C]
         :return: a tensor of [batch_size, d]
         """
-        if not self.finetuning:
-            with torch.no_grad():
-                _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
-                x = x.detach()
+        if align_indexes is not None:
+            if not self.finetuning:
+                with torch.no_grad():
+                    x, _ = self.backbone(video_features, video_mask, token_type_ids, position_ids)
+                    x = x.detach()
+            else:
+                x, _ = self.backbone(video_features, video_mask, token_type_ids, position_ids)
+                
+            # x = self.mlp_map(x)         # [b, dim]
+            x = x / x.norm(2, dim=-1, keepdim=True)
+            x_copy = copy.deepcopy(x)
+            # Reorder tokens based on pre-compuated alignment to align with English sentences
+            for sent, sent_copy, align_index in zip(x, x_copy, align_indexes):
+                indexes = list(align_index.split(" "))
+                for pair in indexes:
+                    original_position = int(pair.split("-")[0])
+                    aligned_position  = int(pair.split("-")[1])
+                    sent[original_position] = sent_copy[aligned_position]
+
         else:
-            _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
-            
-        # x = self.mlp_map(x)         # [b, dim]
-        x = x / x.norm(2, dim=-1, keepdim=True)
+            if not self.finetuning:
+                with torch.no_grad():
+                    _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
+                    x = x.detach()
+            else:
+                _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
+                
+            # x = self.mlp_map(x)         # [b, dim]
+            x = x / x.norm(2, dim=-1, keepdim=True)
+
         return x
 
 class VisnModel(nn.Module):

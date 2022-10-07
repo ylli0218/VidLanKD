@@ -143,7 +143,7 @@ def info_nce_loss(
     batch_size, lang_len, dim = lang_output.shape
 
     # Expand the visn_output to match each word
-    visn_output = visn_output.unsqueeze(1)
+    # visn_output = visn_output.unsqueeze(1)
     # [b, 1, dim]
 
     # Scores of vision to language pairs
