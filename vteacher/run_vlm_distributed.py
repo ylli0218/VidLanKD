@@ -78,6 +78,7 @@ try:
 except ImportError:
     from tensorboardX import SummaryWriter
 
+from os.path import exists
 
 logger = logging.getLogger(__name__)
 logger.setLevel(20) #INFO level
@@ -186,7 +187,8 @@ def train(args, train_dataset, valid_dataset,
         rank=args.rank,
         shuffle=True,
     )
-    if args.model_name_or_path:
+    smapler_file = os.path.join(args.model_name_or_path, "sampler_state.pt")
+    if args.model_name_or_path and exists(smapler_file):
         loaded_state = torch.load(os.path.join(args.model_name_or_path, "sampler_state.pt"), map_location=args.device)
         train_sampler = ContinuableSampler(base_sampler,
                                             resume_index=loaded_state["resume_index"],
