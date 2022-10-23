@@ -179,7 +179,7 @@ def batchwise_hinge_rank_loss(
     assert margin > 0.
 
     # Expand the visn_output to match each word
-    visn_output = visn_output.unsqueeze(1)
+    # visn_output = visn_output.unsqueeze(1)
     # [b, 1, dim]
 
     # Scores of vision to language pairs
@@ -189,10 +189,12 @@ def batchwise_hinge_rank_loss(
     # diagonal: scores of positive pairs
 
     # Scores of language to vision pairs
-    lang_visn_scores = (
-        lang_output.reshape(batch_size, 1, lang_len, dim) *
-        visn_output.reshape(1, batch_size, 1, dim)
-    ).sum(-1)
+    # lang_visn_scores = (
+    #     lang_output.reshape(batch_size, 1, lang_len, dim) *
+    #     visn_output.reshape(1, batch_size, 1, dim)
+    # ).sum(-1)
+    lang_visn_scores = (visn_output * lang_output.unsqueeze(1)).sum(-1)
+
     # [b(lang), b(visn), max_len]
     # (i,j): similarity between i-th text and j-th image
     # diagonal: scores of positive pairs
