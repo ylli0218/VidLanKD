@@ -459,6 +459,7 @@ class SecLangModel(nn.Module):
         transformer = BertModel.from_pretrained(model_type)
         self.backbone = transformer
         # Setup follow-up layers
+        # Not used any more 
         self.mlp_map = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size),
             nn.ReLU(),

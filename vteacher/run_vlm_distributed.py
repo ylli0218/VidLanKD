@@ -96,7 +96,8 @@ MODEL_CLASSES = {
 
 def load_and_cache_examples(args, mode, tokenizer, secLang_tokenizer, evaluate=False):
     file_path = args.eval_data_file if evaluate else args.train_data_file
-    return CoLDatasetUnified(file_path, mode, args.tokenizer_name, tokenizer, secLang_tokenizer, args.block_size, args.pc_sent_len,
+    parallel_data_path = args.parallel_data
+    return CoLDatasetUnified(file_path, parallel_data_path, mode, args.tokenizer_name, tokenizer, secLang_tokenizer, args.block_size, args.pc_sent_len,
                       split_sent=args.split_sent, voken_dir=args.voken_dir,
                       suffix=args.voken_suffix,
                       verbose=(args.gpu == 0),
@@ -187,8 +188,7 @@ def train(args, train_dataset, valid_dataset,
         rank=args.rank,
         shuffle=True,
     )
-    smapler_file = os.path.join(args.model_name_or_path, "sampler_state.pt")
-    if args.model_name_or_path and exists(smapler_file):
+    if args.model_name_or_path and exists(os.path.join(args.model_name_or_path, "sampler_state.pt")):
         loaded_state = torch.load(os.path.join(args.model_name_or_path, "sampler_state.pt"), map_location=args.device)
         train_sampler = ContinuableSampler(base_sampler,
                                             resume_index=loaded_state["resume_index"],
@@ -395,7 +395,7 @@ def train(args, train_dataset, valid_dataset,
             
             model.train()
             if secLang_model is not None:
-                secLang_model.train()
+                secLang_model.eval()
             
             if args.voken_hinge_loss or args.info_nce_loss:
                 # Not sure why using [:,:,-1] for voken_masks

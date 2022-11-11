@@ -11,6 +11,9 @@ def process_args():
     parser.add_argument(
         "--eval_data_file", default=None, type=str,
         help="An optional input evaluation data file to evaluate the perplexity on (a text file).")
+    parser.add_argument(
+        "--parallel_data", default='/dccstor/sentient1/git/VidLanKD/data/en-zh/', type=str,
+        help="An optional input evaluation data file to evaluate the perplexity on (a text file).")
     parser.add_argument("--do_train", action="store_true", help="Whether to run training.")
     parser.add_argument("--do_eval", action="store_true", help="Whether to run eval on the dev set.")
 

@@ -293,14 +293,14 @@ class CoLDatasetUnified(Dataset):
     IGNORE_ID = -100
     sent_strategy = 'first'
 
-    def __init__(self, file_path, mode, tokenizer_name, tokenizer, secLang_tokenizer, block_size=512, pc_sent_len=64,
+    def __init__(self, file_path, parallel_data_path, mode, tokenizer_name, tokenizer, secLang_tokenizer, block_size=512, pc_sent_len=64,
                  split_sent=False, voken_dir=None, suffix=None, verbose=False,
                  voken_ablation=None, use_clip=None):
         if mode == 'train':
-            with open(feature_dir + 'train.tsv') as f:
+            with open(parallel_data_path + '/train.tsv') as f:
                 self.data = f.readlines()
         else:
-            with open(feature_dir + 'valid.tsv') as f:
+            with open(parallel_data_path + '/valid.tsv') as f:
                 self.data = f.readlines()
         print(len(self.data)) 
         self.sent_len = block_size + 2 #including specidal tokens
