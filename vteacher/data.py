@@ -11,6 +11,7 @@ import h5py
 import torch
 from torch.utils.data import DataLoader, Dataset
 import tqdm
+import os
 
 feature_dir = './data/'
 feature_dir_data = '.'
@@ -309,6 +310,7 @@ class CoLDatasetUnified(Dataset):
         self.secLang_tokenizer = secLang_tokenizer
 
         # Load english only MLM training data
+        tokenizer_name=os.path.basename(tokenizer_name)
         token_path = file_path + '.' + tokenizer_name + '.hdf5'
         assert os.path.isfile(token_path)
         if verbose:

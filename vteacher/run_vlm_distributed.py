@@ -91,6 +91,7 @@ MODEL_CLASSES = {
     "roberta": (RobertaConfig, RobertaForMaskedLM, RobertaTokenizer),
     "distilbert": (DistilBertConfig, DistilBertForMaskedLM, DistilBertTokenizer),
     "camembert": (CamembertConfig, CamembertForMaskedLM, CamembertTokenizer),
+    "bert-base-german-cased": (CoLBertConfig, CoLwithBert, BertTokenizer),
 }
 
 
@@ -830,7 +831,7 @@ def setup(gpu, args):
     if args.voken_hinge_loss or args.info_nce_loss:
         # secLang_model = BertModel.from_pretrained(args.secLang_type)
         secLang_model = SecLangModel(args.secLang_type, config)
-        if args.model_name_or_path:
+        if args.model_name_or_path and exists(os.path.join(args.model_name_or_path, "sampler_state.pt")):
             secLang_model.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "secLang_model.chkpt"), map_location=args.device))
         secLang_model.to(args.device)
     else:
