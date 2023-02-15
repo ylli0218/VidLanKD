@@ -580,11 +580,12 @@ def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler
     )  # Take care of distributed/parallel training
     model_to_save.save_pretrained(output_dir)
 
-    secLang_model_to_save = (
-        secLang_model.module if hasattr(secLang_model, "module") else secLang_model
-    )  # Take care of distributed/parallel training
-    if secLang_model is not None:
-        torch.save(secLang_model_to_save.state_dict(), output_dir+'/secLang_model.chkpt')
+    # No need to save the secLang model since it is not upated
+    # secLang_model_to_save = (
+    #     secLang_model.module if hasattr(secLang_model, "module") else secLang_model
+    # )  # Take care of distributed/parallel training
+    # if secLang_model is not None:
+    #     torch.save(secLang_model_to_save.state_dict(), output_dir+'/secLang_model.chkpt')
     tokenizer.save_pretrained(output_dir)
     
     torch.save(args, os.path.join(output_dir, "training_args.bin"))
@@ -783,10 +784,6 @@ def setup(gpu, args):
     # and the others will use the cache
     if gpu != 0:
         torch.distributed.barrier()
-    if args.voken_hinge_loss or args.info_nce_loss:
-        secLang_tokenizer = BertTokenizer.from_pretrained(args.secLang_type)
-    train_dataset = load_and_cache_examples(args, 'train', tokenizer, secLang_tokenizer, evaluate=False)
-    valid_dataset = load_and_cache_examples(args, 'valid', tokenizer, secLang_tokenizer, evaluate=True)
     if gpu == 0:
         torch.distributed.barrier()
 
@@ -829,14 +826,21 @@ def setup(gpu, args):
         model = model_class(config=config)
 
     if args.voken_hinge_loss or args.info_nce_loss:
+        # secLang_tokenizer = BertTokenizer.from_pretrained(args.secLang_type)
+        secLang_tokenizer = AutoTokenizer.from_pretrained(args.secLang_type)
         # secLang_model = BertModel.from_pretrained(args.secLang_type)
         secLang_model = SecLangModel(args.secLang_type, config)
-        if args.model_name_or_path and exists(os.path.join(args.model_name_or_path, "sampler_state.pt")):
-            secLang_model.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "secLang_model.chkpt"), map_location=args.device))
+        # secLang model's weights are not updated during trainning, so not need to load local checkpoint
+        # if args.model_name_or_path and exists(os.path.join(args.model_name_or_path, "sampler_state.pt")):
+        #     # secLang_model.load_state_dict(torch.load(os.path.join(args.model_name_or_path, "secLang_model.chkpt"), map_location=args.device))
+        #     secLang_model = torch.load(os.path.join(args.model_name_or_path, "secLang_model.chkpt"), map_location=args.device)
         secLang_model.to(args.device)
     else:
         secLang_model = None
     model.to(args.device)
+
+    train_dataset = load_and_cache_examples(args, 'train', tokenizer, secLang_tokenizer, evaluate=False)
+    valid_dataset = load_and_cache_examples(args, 'valid', tokenizer, secLang_tokenizer, evaluate=True)
 
     # End of barrier to make sure only the first process waiting other processes
     if gpu == 0:
