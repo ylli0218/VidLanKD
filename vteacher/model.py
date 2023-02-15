@@ -456,16 +456,17 @@ class SecLangModel(nn.Module):
         self.finetuning = finetuning
 
         # Setup Backbone
-        transformer = BertModel.from_pretrained(model_type)
+        transformer = AutoModel.from_pretrained(model_type)
         self.backbone = transformer
         # Setup follow-up layers
         # Not used any more 
-        self.mlp_map = nn.Sequential(
-            nn.Linear(config.hidden_size, config.hidden_size),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(config.hidden_size, config.hidden_size),
-        )
+        # dim = transformer.config.emb_dim
+        # self.mlp_map = nn.Sequential(
+        #     nn.Linear(dim, config.hidden_size),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.3),
+        #     nn.Linear(config.hidden_size, config.hidden_size),
+        # )
 
     def forward(self, video_features, video_mask, token_type_ids=None, position_ids=None, align_indexes=None):
         """
