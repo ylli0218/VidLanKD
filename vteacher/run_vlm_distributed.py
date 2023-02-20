@@ -381,7 +381,7 @@ def train(args, train_dataset, valid_dataset,
             #     position_ids.append(i)
             # position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
             # If some of the input is padded, then the attention mask is needed
-            attention_mask = (token_inputs != tokenizer.pad_token_id)         # word_tokens --> 1, pad_token --> 0
+            attention_mask = (token_inputs != tokenizer.pad_token_id).int()         # word_tokens --> 1, pad_token --> 0
             non_pc_attention_mask = (non_pc_token_inputs != tokenizer.pad_token_id)
 
             if epoch == 0 and step < 3 and args.gpu == 0:
@@ -398,7 +398,7 @@ def train(args, train_dataset, valid_dataset,
             if secLang_model is not None:
                 secLang_model.eval()
             
-            if args.voken_hinge_loss or args.info_nce_loss:
+            if args.voken_hinge_loss or args.info_nce_loss or args.MSEloss:
                 # Not sure why using [:,:,-1] for voken_masks
                 # voken_masks = (voken_labels!=0.0)[:,:,-1]
                 voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
@@ -411,6 +411,7 @@ def train(args, train_dataset, valid_dataset,
                 
             outputs = model(token_inputs,
                             attention_mask=attention_mask,
+                            voken_mask = voken_masks,
                             masked_lm_labels=token_labels,
                             voken_labels=visn_output,
                             non_pc_token_inputs = non_pc_token_inputs,
@@ -649,11 +650,11 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
         #     position_ids.append(i)
         # position_ids = torch.tensor(position_ids).unsqueeze(0).long().repeat(token_type_ids.size(0), 1).to(args.device)
         # If some of the input is padded, then the attention mask is needed
-        attention_mask = (token_inputs != tokenizer.pad_token_id)  # word_tokens --> 1, pad_token --> 0
+        attention_mask = (token_inputs != tokenizer.pad_token_id).int()  # word_tokens --> 1, pad_token --> 0
         non_pc_attention_mask = (non_pc_token_inputs != tokenizer.pad_token_id)
 
         with torch.no_grad():
-            if args.voken_hinge_loss or args.info_nce_loss:
+            if args.voken_hinge_loss or args.info_nce_loss or args.MSEloss:
                 # Not sure why using [:,:,-1] for voken_masks
                 # voken_masks = (voken_labels!=0.0)[:,:,-1]
                 voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
@@ -665,6 +666,7 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
         
             outputs = model(token_inputs,
                             attention_mask=attention_mask,
+                            voken_mask = voken_masks,
                             masked_lm_labels=token_labels,
                             voken_labels=visn_output,
                             non_pc_token_inputs = non_pc_token_inputs,
@@ -735,7 +737,7 @@ def setup(gpu, args):
         world_size=args.world_size,
         rank=args.rank
     )
-    assert[args.info_nce_loss, args.voken_hinge_loss].count(True) <= 1
+    assert[args.info_nce_loss, args.voken_hinge_loss, args.MSEloss].count(True) <= 1
 
     # Setup logging
     logging.basicConfig(
@@ -801,6 +803,7 @@ def setup(gpu, args):
             shared_head=args.shared_head,
             voken_hinge_loss=args.voken_hinge_loss,
             info_nce_loss=args.info_nce_loss,
+            mse_loss = args.MSEloss,
             margin=args.margin,
             tau=args.tau,
             verbose=(args.gpu == 0),
@@ -825,7 +828,7 @@ def setup(gpu, args):
         logger.info("Training new model from scratch")
         model = model_class(config=config)
 
-    if args.voken_hinge_loss or args.info_nce_loss:
+    if args.voken_hinge_loss or args.info_nce_loss or args.MSEloss:
         # secLang_tokenizer = BertTokenizer.from_pretrained(args.secLang_type)
         secLang_tokenizer = AutoTokenizer.from_pretrained(args.secLang_type)
         # secLang_model = BertModel.from_pretrained(args.secLang_type)

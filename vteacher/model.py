@@ -44,6 +44,7 @@ class CoLBertConfig(BertConfig):
         self.use_clip = True
         self.voken_hinge_loss = True
         self.info_nce_loss = False
+        self.mse_loss = False
         self.margin = 1
         self.tau = 1
 
@@ -229,6 +230,7 @@ class CoLwithBert(BertForMaskedLM):
         
         self.voken_hinge_loss = config.voken_hinge_loss
         self.info_nce_loss = config.info_nce_loss
+        self.mse_loss = config.mse_loss
         self.margin = config.margin
         self.verbose = config.verbose
         self.tau = config.tau
@@ -240,6 +242,8 @@ class CoLwithBert(BertForMaskedLM):
             self.contrastive_loss = info_nce_loss
         elif config.voken_hinge_loss:
             self.contrastive_loss = batchwise_hinge_rank_loss
+        elif config.mse_loss:
+            self.contrastive_loss = MSELoss()
         else: 
             assert "No other loss supportted yet"
 
@@ -250,6 +254,7 @@ class CoLwithBert(BertForMaskedLM):
             self,
             input_ids=None,
             attention_mask=None,
+            voken_mask=None,
             token_type_ids=None,
             position_ids=None,
             head_mask=None,
@@ -291,13 +296,21 @@ class CoLwithBert(BertForMaskedLM):
         voken_contrastive_loss = torch.tensor(0.0).to(sequence_output)
 
         if self.voken_hinge_loss:
+            voken_labels =  voken_labels / voken_labels.norm(2, dim=-1, keepdim=True)
             voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
             voken_prediction *= attention_mask.unsqueeze(-1)
             voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, 1.0) * 1.0                        
         elif self.info_nce_loss:
+            voken_labels =  voken_labels / voken_labels.norm(2, dim=-1, keepdim=True)
             voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
+            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, voken_mask, self.tau) * 1.0                        
+        elif self.mse_loss:
+            # No normalization
+            voken_prediction = sequence_output
             voken_prediction *= attention_mask.unsqueeze(-1)
-            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, self.tau) * 1.0                        
+            voken_labels *= attention_mask.unsqueeze(-1)
+            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels) * 1.0                        
+
         
         if masked_lm_labels is not None:
             prediction_scores = self.cls(sequence_output)
@@ -482,7 +495,8 @@ class SecLangModel(nn.Module):
                 x, _ = self.backbone(video_features, video_mask, token_type_ids, position_ids)
                 
             # x = self.mlp_map(x)         # [b, dim]
-            x = x / x.norm(2, dim=-1, keepdim=True)
+            # Normalize later
+            # x = x / x.norm(2, dim=-1, keepdim=True)
             x_copy = copy.deepcopy(x)
             # Reorder tokens based on pre-compuated alignment to align with English sentences
             for sent, sent_copy, align_index in zip(x, x_copy, align_indexes):
@@ -501,7 +515,7 @@ class SecLangModel(nn.Module):
                 _, x = self.backbone(video_features, video_mask, token_type_ids, position_ids)
                 
             # x = self.mlp_map(x)         # [b, dim]
-            x = x / x.norm(2, dim=-1, keepdim=True)
+            # x = x / x.norm(2, dim=-1, keepdim=True)
 
         return x
 

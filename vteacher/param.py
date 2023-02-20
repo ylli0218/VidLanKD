@@ -89,6 +89,7 @@ def process_args():
     parser.add_argument("--shared_head", action='store_true', help='Share the head if more than one tasks (e.g., cls, reg, ctr) are used (not used in this paper)')
     parser.add_argument("--voken_hinge_loss", action='store_true', help='Will do voken contrastive task (not used in this paper)')
     parser.add_argument("--info_nce_loss", action='store_true', help='Will do infoNCE loss')
+    parser.add_argument("--MSEloss", action='store_true', help='MSE loss')
     parser.add_argument("--use_clip", action='store_true', help='Will do voken regression task (not used in this paper)')
     parser.add_argument("--margin", default=1.0, type=float, help="Total number of training epochs to perform.")
     parser.add_argument("--tau", default=1.0, type=float, help="used in infoNce loss")
