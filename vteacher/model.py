@@ -48,6 +48,22 @@ class CoLBertConfig(BertConfig):
         self.margin = 1
         self.tau = 1
 
+class CoLXLMRConfig(XLMRobertaConfig):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.voken_size = None
+        self.voken_dim = None
+        self.do_voken_cls = False
+        self.do_voken_reg = False
+        self.do_voken_ctr = False
+        self.shared_head = False
+        self.verbose = False
+        self.use_clip = True
+        self.voken_hinge_loss = True
+        self.info_nce_loss = False
+        self.mse_loss = False
+        self.margin = 1
+        self.tau = 1
 
 class BertSharedHead(BertOnlyMLMHead):
     """Bert Head for masked language modeling."""
@@ -265,7 +281,8 @@ class CoLwithBert(BertForMaskedLM):
             voken_labels=None,
             non_pc_token_inputs=None,
             non_pc_attention_mask=None,
-            non_pc_masked_lm_labels=None
+            non_pc_masked_lm_labels=None,
+            aligned_tokens=None
     ):
         outputs = self.bert(
             input_ids,
@@ -303,7 +320,7 @@ class CoLwithBert(BertForMaskedLM):
         elif self.info_nce_loss:
             voken_labels =  voken_labels / voken_labels.norm(2, dim=-1, keepdim=True)
             voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
-            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, voken_mask, self.tau) * 1.0                        
+            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, voken_mask, aligned_tokens, self.tau) * 1.0                        
         elif self.mse_loss:
             # No normalization
             voken_prediction = sequence_output
@@ -364,7 +381,115 @@ class CoLwithBert(BertForMaskedLM):
             prediction_scores = None
         return prediction_scores, voken_prediction, sequence_output
     
-    
+class CoLwithXLMR(XLMRobertaForMaskedLM):
+    config_class = CoLXLMRConfig
+
+    def __init__(self, config):
+        super().__init__(config)
+        
+        self.voken_hinge_loss = config.voken_hinge_loss
+        self.info_nce_loss = config.info_nce_loss
+        self.mse_loss = config.mse_loss
+        self.margin = config.margin
+        self.verbose = config.verbose
+        self.tau = config.tau
+
+        self.token_cls_loss_fct = CrossEntropyLoss()
+        # self.visual_hinge_head = BertVLMHingeHead(config)
+        # self.contrastive_loss = paired_hinge_rank_loss 
+        if config.info_nce_loss:
+            self.contrastive_loss = info_nce_loss
+        elif config.voken_hinge_loss:
+            self.contrastive_loss = batchwise_hinge_rank_loss
+        elif config.mse_loss:
+            self.contrastive_loss = MSELoss()
+        else: 
+            assert "No other loss supportted yet"
+
+    def to(self, *args):
+        return super().to(*args)
+
+    def forward(
+            self,
+            input_ids=None,
+            attention_mask=None,
+            voken_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            masked_lm_labels=None,
+            encoder_hidden_states=None,
+            encoder_attention_mask=None,
+            voken_labels=None,
+            non_pc_token_inputs=None,
+            non_pc_attention_mask=None,
+            non_pc_masked_lm_labels=None,
+            aligned_tokens=None
+    ):
+        outputs = self.roberta(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+        sequence_output = outputs[0]
+        pooled_output = outputs[1]
+
+        non_pc_outputs = self.roberta(
+            non_pc_token_inputs,
+            attention_mask=non_pc_attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+        non_pc_sequence_output = non_pc_outputs[0]
+        non_pc_pooled_output = non_pc_outputs[1]
+
+        voken_contrastive_loss = torch.tensor(0.0).to(sequence_output)
+
+        # voken labels: secLang output after aligned with prime language
+        # voken_prediction: prime language output
+        if self.voken_hinge_loss:
+            voken_labels =  voken_labels / voken_labels.norm(2, dim=-1, keepdim=True)
+            voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
+            voken_prediction *= attention_mask.unsqueeze(-1)
+            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, 1.0) * 1.0                        
+        elif self.info_nce_loss:
+            voken_labels =  voken_labels / voken_labels.norm(2, dim=-1, keepdim=True)
+            voken_prediction = sequence_output/sequence_output.norm(2, dim=-1, keepdim=True)
+            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels, attention_mask, voken_mask, aligned_tokens, self.tau) * 1.0                        
+        elif self.mse_loss:
+            # No normalization
+            voken_prediction = sequence_output
+            voken_prediction *= attention_mask.unsqueeze(-1)
+            voken_labels *= attention_mask.unsqueeze(-1)
+            voken_contrastive_loss += self.contrastive_loss(voken_prediction, voken_labels) * 1.0                        
+
+        
+        if masked_lm_labels is not None:
+            prediction_scores = self.lm_head(sequence_output)
+            token_loss = self.token_cls_loss_fct(
+                prediction_scores.view(-1, self.config.vocab_size),
+                masked_lm_labels.view(-1))
+        else:
+            token_loss = torch.tensor(0.)
+
+        if non_pc_masked_lm_labels is not None:
+            non_pc_prediction_scores = self.lm_head(non_pc_sequence_output)
+            non_pc_token_loss = self.token_cls_loss_fct(
+                non_pc_prediction_scores.view(-1, self.config.vocab_size),
+                non_pc_masked_lm_labels.view(-1))
+        else:
+            non_pc_token_loss = torch.tensor(0.)
+        return voken_contrastive_loss, token_loss, non_pc_token_loss
     
 class LangModel(CoLwithBert):
     config_class = CoLBertConfig
@@ -490,6 +615,7 @@ class SecLangModel(nn.Module):
             if not self.finetuning:
                 with torch.no_grad():
                     x, _ = self.backbone(video_features, video_mask, token_type_ids, position_ids)
+                    # x, z = self.backbone_2(video_features, video_mask, token_type_ids, position_ids)
                     x = x.detach()
             else:
                 x, _ = self.backbone(video_features, video_mask, token_type_ids, position_ids)
@@ -498,14 +624,16 @@ class SecLangModel(nn.Module):
             # Normalize later
             # x = x / x.norm(2, dim=-1, keepdim=True)
             x_copy = copy.deepcopy(x)
+            aligned_words = torch.zeros(x.size()[0], x.size()[1])
             # Reorder tokens based on pre-compuated alignment to align with English sentences
-            for sent, sent_copy, align_index in zip(x, x_copy, align_indexes):
+            for sent, sent_copy, align_index, aligned_word in zip(x, x_copy, align_indexes, aligned_words):
                 indexes = list(align_index.split(" "))
                 for pair in indexes:
                     original_position = int(pair.split("-")[0])
                     aligned_position  = int(pair.split("-")[1])
-                    sent[original_position] = sent_copy[aligned_position]
-
+                    sent[aligned_position] = sent_copy[original_position]
+                    aligned_word[aligned_position] = 1
+            return x, aligned_words
         else:
             if not self.finetuning:
                 with torch.no_grad():
@@ -517,7 +645,7 @@ class SecLangModel(nn.Module):
             # x = self.mlp_map(x)         # [b, dim]
             # x = x / x.norm(2, dim=-1, keepdim=True)
 
-        return x
+            return x
 
 class VisnModel(nn.Module):
     def __init__(self, use_clip, config, arch='BERT', pretrained=True, finetuning=False):
