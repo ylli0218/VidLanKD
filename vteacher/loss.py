@@ -139,37 +139,31 @@ def info_nce_loss(
         visn_output: torch.Tensor,
         lang_mask: torch.Tensor,
         voken_mask: torch.Tensor,
-        tau=1.0
+        aligned_tokens,
+        tau=1.0,
 ):
     batch_size, lang_len, dim = lang_output.shape
-    #visn output is means the output from second language
+    #visn output means the output from second language
 
     # Scores of vision to language pairs
     visn_lang_scores = (lang_output * visn_output.unsqueeze(1)).sum(-1)
     # [b(visn), b(lang), max_len]
     # (i,j): similarity between i-th image and j-th text
     # diagonal: scores of positive pairs
-    # visn_lang_scores = (visn_lang_scores.sum(-1)/tau).exp()
-    # eye = torch.eye(visn_lang_scores.shape[0]).to(visn_lang_scores.device)
-    # pos = (eye * visn_lang_scores).sum(1)
-    # all_pair_div = torch.cat([pos / visn_lang_scores.sum(0), pos / visn_lang_scores.sum(1)])
-    # loss = all_pair_div.log().neg().mean()
 
     #Instead of sum each token's score within one sentence, try run infoNCE
-    #loss at token level
-    visn_lang_scores = (visn_lang_scores/tau).exp()
+    #loss at token level, only calcuate the losee associated with the successfully aligned tokens
+    visn_lang_scores = (visn_lang_scores/tau).exp() 
     eye = torch.eye(visn_lang_scores.shape[0]).to(visn_lang_scores.device).unsqueeze(-1)
     pos = (eye * visn_lang_scores).sum(1)
 
     sum_visn = pos / visn_lang_scores.sum(0)
     sum_lang = pos / visn_lang_scores.sum(1)
-    loss_1 = sum_visn.log().neg() * lang_mask
-    loss_2 = sum_lang.log().neg() * voken_mask
-    cnt = lang_mask.sum() + voken_mask.sum()
+    loss_1 = sum_visn.log().neg() * aligned_tokens
+    loss_2 = sum_lang.log().neg() * aligned_tokens
+    # cnt = lang_mask.sum() + voken_mask.sum()
+    cnt = aligned_tokens.sum() * 2
     loss = torch.cat([loss_1.flatten(),loss_2.flatten()]).sum()/cnt
-
-    # all_pair_div = torch.cat([(pos / visn_lang_scores.sum(0)).flatten(), (pos / visn_lang_scores.sum(1)).flatten()])
-    # loss = all_pair_div.log().neg().mean()
 
     return loss
 
