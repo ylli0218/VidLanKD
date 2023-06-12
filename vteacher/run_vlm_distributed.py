@@ -64,6 +64,9 @@ from transformers import (
     RobertaConfig,
     RobertaForMaskedLM,
     RobertaTokenizer,
+    XLMRobertaForMaskedLM,
+    XLMRobertaConfig,
+    XLMRobertaTokenizer,
     get_linear_schedule_with_warmup,
 )
 
@@ -71,6 +74,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vteacher.data import CoLDatasetUnified, get_voken_feats
 from vteacher.param import process_args
 from vteacher.model import CoLBertConfig, CoLwithBert, VisnModel, SecLangModel
+from vteacher.model import CoLXLMRConfig, CoLwithXLMR
 from vteacher.continuable_sampler import ContinuableSampler
 
 try:
@@ -92,6 +96,7 @@ MODEL_CLASSES = {
     "distilbert": (DistilBertConfig, DistilBertForMaskedLM, DistilBertTokenizer),
     "camembert": (CamembertConfig, CamembertForMaskedLM, CamembertTokenizer),
     "bert-base-german-cased": (CoLBertConfig, CoLwithBert, BertTokenizer),
+    "xlm-roberta-base": (CoLXLMRConfig, CoLwithXLMR, XLMRobertaTokenizer),
 }
 
 
@@ -157,7 +162,7 @@ def mask_tokens(tokens: torch.Tensor, vokens: torch.Tensor, tokenizer: PreTraine
 
 
 def train(args, train_dataset, valid_dataset,
-          model, tokenizer, secLang_model=None) -> Tuple[int, float]:
+          model, tokenizer, secLang_tokenizer=None, secLang_model=None) -> Tuple[int, float]:
     set_seed(args)  # Added here for reproducibility
 
     """ Train the model """
@@ -168,6 +173,7 @@ def train(args, train_dataset, valid_dataset,
     args.train_batch_size = args.per_gpu_train_batch_size
 
     def col_collate(examples):
+        # tokens: prime language, vokens: auxilary language
         tokens, vokens, non_pc_tokens, align_indexes = zip(*examples)
         if tokenizer._pad_token is None:
             tokens = pad_sequence(tokens, batch_first=True)
@@ -390,7 +396,7 @@ def train(args, train_dataset, valid_dataset,
                 print("Token inputs (in str): ", tokenizer.convert_ids_to_tokens(token_inputs[0].cpu().numpy()))
                 print("Attention Mask:", attention_mask)
                 print("Token Labels: ", token_labels[0] if token_labels is not None else token_labels)
-                print("Token Labels (in str): ", tokenizer.convert_ids_to_tokens(token_labels[0].cpu().numpy()) if token_labels is not None else token_labels)
+                # print("Token Labels (in str): ", tokenizer.convert_ids_to_tokens(token_labels[0].cpu().numpy()) if token_labels is not None else token_labels)
                 print("Voken Labels: ", voken_labels[0])
                 print()
             
@@ -401,13 +407,15 @@ def train(args, train_dataset, valid_dataset,
             if args.voken_hinge_loss or args.info_nce_loss or args.MSEloss:
                 # Not sure why using [:,:,-1] for voken_masks
                 # voken_masks = (voken_labels!=0.0)[:,:,-1]
-                voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
-                token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
-                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids, align_indexes=align_indexes)
+                voken_masks = (voken_labels != secLang_tokenizer.pad_token_id).int().to(args.device)
+                # token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+                token_type_ids = torch.zeros_like(voken_masks).long().to(args.device)        
+                visn_output, aligned_tokens = secLang_model(voken_labels, voken_masks, token_type_ids, align_indexes=align_indexes)
                 # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
                 # visn_output = visn_output / visn_output.norm(2, dim=-1, keepdim=True)
             else:
                 visn_output = None
+                aligned_tokens = None
                 
             outputs = model(token_inputs,
                             attention_mask=attention_mask,
@@ -416,7 +424,8 @@ def train(args, train_dataset, valid_dataset,
                             voken_labels=visn_output,
                             non_pc_token_inputs = non_pc_token_inputs,
                             non_pc_attention_mask = non_pc_attention_mask,
-                            non_pc_masked_lm_labels = non_pc_token_labels
+                            non_pc_masked_lm_labels = non_pc_token_labels,
+                            aligned_tokens = aligned_tokens
                             )
             voken_contra_loss = outputs[0]
             token_loss = outputs[1]
@@ -496,7 +505,7 @@ def train(args, train_dataset, valid_dataset,
                     sampler_state = {"resume_index": resume_index,
                                     "generator_state": generator_state}
                     save_model(args, checkpoint_name, model, secLang_model, tokenizer, optimizer, scheduler, sampler_state)
-                    results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+                    results = evaluate(args, valid_dataset, model, tokenizer, secLang_tokenizer=secLang_tokenizer, secLang_model=secLang_model)
                     for key, value in results.items():
                         logger.info("\t %s: %0.4f" % (key, value))
                         tb_writer.add_scalar("eval_{}".format(key), value, global_step)
@@ -536,7 +545,7 @@ def train(args, train_dataset, valid_dataset,
                 old_eval_batch_size = args.per_gpu_eval_batch_size
                 while args.per_gpu_eval_batch_size > 0:
                     try:
-                        results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+                        results = evaluate(args, valid_dataset, model, tokenizer, secLang_tokenizer=secLang_tokenizer, secLang_model=secLang_model)
                         break
                     except RuntimeError as e:
                         args.per_gpu_eval_batch_size = int(args.per_gpu_eval_batch_size / 2)
@@ -597,7 +606,7 @@ def save_model(args, name, model, secLang_model, tokenizer, optimizer, scheduler
     torch.save(sampler_state, os.path.join(output_dir, "sampler_state.pt"))
 
 
-def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix="") -> Dict:
+def evaluate(args, eval_dataset, model, tokenizer, secLang_tokenizer=None, secLang_model=None, prefix="") -> Dict:
     torch.cuda.empty_cache() 
     # # Loop to handle MNLI double evaluation (matched, mis-matched)
     # eval_dataset = load_and_cache_examples(args, tokenizer, evaluate=True)
@@ -657,12 +666,15 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
             if args.voken_hinge_loss or args.info_nce_loss or args.MSEloss:
                 # Not sure why using [:,:,-1] for voken_masks
                 # voken_masks = (voken_labels!=0.0)[:,:,-1]
-                voken_masks = (voken_labels != tokenizer.pad_token_id).int().to(args.device)
-                token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+                voken_masks = (voken_labels != secLang_tokenizer.pad_token_id).int().to(args.device)
+                # token_type_ids for sentence A should be 0
+                # token_type_ids = torch.ones_like(voken_masks).long().to(args.device)        
+                token_type_ids = torch.zeros_like(voken_masks).long().to(args.device)        
                 # visn_output = secLang_model(voken_labels, voken_masks, token_type_ids)
-                visn_output = secLang_model(voken_labels, voken_masks, token_type_ids, align_indexes=align_indexes)
+                visn_output, aligned_tokens = secLang_model(voken_labels, voken_masks, token_type_ids, align_indexes=align_indexes)
             else:
                 visn_output = None
+                aligned_tokens = None
         
             outputs = model(token_inputs,
                             attention_mask=attention_mask,
@@ -671,7 +683,8 @@ def evaluate(args, eval_dataset, model, tokenizer, secLang_model=None, prefix=""
                             voken_labels=visn_output,
                             non_pc_token_inputs = non_pc_token_inputs,
                             non_pc_attention_mask = non_pc_attention_mask,
-                            non_pc_masked_lm_labels = non_pc_token_labels
+                            non_pc_masked_lm_labels = non_pc_token_labels,
+                            aligned_tokens = aligned_tokens
                             )
             voken_contra_loss = outputs[0]
             token_loss = outputs[1]
@@ -863,11 +876,11 @@ def setup(gpu, args):
 
     # Training
     if args.do_train:
-        train(args, train_dataset, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+        train(args, train_dataset, valid_dataset, model, tokenizer, secLang_tokenizer=secLang_tokenizer, secLang_model=secLang_model)
 
     # Evaluation
     if args.do_eval and gpu == 0:
-        results = evaluate(args, valid_dataset, model, tokenizer, secLang_model=secLang_model)
+        results = evaluate(args, valid_dataset, model, tokenizer, secLang_tokenizer=secLang_tokenizer, secLang_model=secLang_model)
         for key, value in results.items():
             logger.info("\t %s: %0.4f" % (key, value))
 
