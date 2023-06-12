@@ -368,11 +368,11 @@ class CoLDatasetUnified(Dataset):
     def __getitem__(self, item):
         example = self.data[item].strip()
         example = example.split('\t')
-        sent_en, sent_nonEn, align_indexes = example[0], example[1], example[2]
+        sent_aux, sent_prime, align_indexes = example[0], example[1], example[2]
         
         #Pad each sentence to sent_len. Could also try combine multiple sentence together for later
-        encoded_sent_en = self.tokenizer.encode_plus(
-            sent_en,
+        encoded_sent_prime = self.tokenizer.encode_plus(
+            sent_prime,
             add_special_tokens=True,
             max_length=self.pc_sent_len,
             truncation=True,
@@ -380,8 +380,8 @@ class CoLDatasetUnified(Dataset):
             padding='max_length',
             return_tensors='pt'     # Return PyTorch (pt) tensors
         )
-        encoded_sent_nonEn = self.secLang_tokenizer.encode_plus(
-            sent_nonEn,
+        encoded_sent_aux = self.secLang_tokenizer.encode_plus(
+            sent_aux,
             add_special_tokens=True,
             max_length=self.pc_sent_len,
             truncation=True,
@@ -390,8 +390,8 @@ class CoLDatasetUnified(Dataset):
             return_tensors='pt'     # Return PyTorch (pt) tensors
         )
         
-        input_ids_en = encoded_sent_en['input_ids'][0]
-        input_ids_nonEn = encoded_sent_nonEn['input_ids'][0]
+        input_ids_aux = encoded_sent_aux['input_ids'][0]
+        input_ids_prime = encoded_sent_prime['input_ids'][0]
 
         # Tokenize non-parallel data
         token_start, token_end = self.batches[item]
@@ -403,7 +403,7 @@ class CoLDatasetUnified(Dataset):
             self.tokenizer.build_inputs_with_special_tokens(tokens),
             dtype=torch.long)
 
-        return input_ids_en, input_ids_nonEn, token_tensor, align_indexes
+        return input_ids_prime, input_ids_aux, token_tensor, align_indexes
         
     def maybe_do_sent_level(self, vokens):
         if not self.sent_level:
